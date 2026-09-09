@@ -214,16 +214,33 @@ def main():
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
 
     # Scheduler with warmup
+    warmup_steps = args.warmup_epochs * len(loader)
+    cosine_steps = (args.epochs - args.warmup_epochs) * len(loader)
+
+    if args.warmup_epochs < 0:
+        raise ValueError("warmup_epochs must be >= 0")
+
+    if args.warmup_epochs >= args.epochs:
+        raise ValueError(
+            "warmup_epochs must be smaller than epochs "
+            "because cosine annealing requires at least one epoch."
+        )
+
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.01, total_iters=args.warmup_epochs * len(loader)
+        optimizer,
+        start_factor=0.01,
+        total_iters=max(1, warmup_steps),
     )
+
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs - args.warmup_epochs
+        optimizer,
+        T_max=max(1, cosine_steps),
     )
+
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer,
         schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[args.warmup_epochs * len(loader)],
+        milestones=[warmup_steps],
     )
 
     # Mixed precision

@@ -127,7 +127,11 @@ class M6AmodalCompleter(BaseMicroModel):
                     gt_masks.flatten(0, 1).unsqueeze(1),
                     size=pred_masks.shape[-2:], mode="nearest"
                 ).squeeze(1).unflatten(0, (pred_masks.shape[0], n_gt))
-            mask_loss = F.binary_cross_entropy(pred_masks, gt_masks)
+            with torch.amp.autocast("cuda", enabled=False):
+                mask_loss = F.binary_cross_entropy(
+                    pred_masks.float(),
+                    gt_masks.float()
+                )
 
         if "is_occluded" in targets:
             # Confidence should be high for occluded objects
@@ -135,10 +139,11 @@ class M6AmodalCompleter(BaseMicroModel):
                 predictions["completion_confidence"].shape[1],
                 targets["is_occluded"].shape[1],
             )
-            conf_loss = F.binary_cross_entropy(
-                predictions["completion_confidence"][:, :n_gt],
-                targets["is_occluded"][:, :n_gt].unsqueeze(-1).float(),
-            )
+            with torch.amp.autocast("cuda", enabled=False):
+                conf_loss = F.binary_cross_entropy(
+                    predictions["completion_confidence"][:, :n_gt].float(),
+                    targets["is_occluded"][:, :n_gt].unsqueeze(-1).float(),
+                )
 
         total = bbox_loss + mask_loss + 0.5 * conf_loss
 
