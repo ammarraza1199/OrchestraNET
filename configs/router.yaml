@@ -1,0 +1,36 @@
+# Adaptive Router Configuration
+router:
+  name: "adaptive_compute_router"
+  description: "Dynamically selects which micro-models to activate per frame"
+
+  complexity_estimator:
+    in_channels: 128              # From FPN
+    pool_type: "adaptive_avg"
+    hidden_dim: 64
+    num_classes: 3                # Simple, Medium, Complex
+
+  routing_profiles:
+    simple:
+      threshold: 0.3
+      active_models: ["m1"]
+      target_latency_ms: 2
+      description: "Few objects, no occlusion"
+
+    medium:
+      threshold: 0.7
+      active_models: ["m1", "m2", "m7"]
+      target_latency_ms: 5
+      description: "Some occlusion, medium density"
+
+    complex:
+      threshold: 1.0
+      active_models: ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
+      target_latency_ms: 12
+      description: "Heavy occlusion, many objects, small objects"
+
+  training:
+    mode: "gumbel_softmax"        # Differentiable routing during training
+    temperature: 1.0
+    temperature_decay: 0.95
+    reward_function: "accuracy_over_latency"
+    latency_penalty: 0.1

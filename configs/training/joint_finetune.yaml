@@ -1,0 +1,64 @@
+# OrchestraNet — Joint Fine-tuning Configuration
+# Used after individual model pre-training for end-to-end optimization.
+
+training:
+  epochs: 100
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  warmup_epochs: 5
+  scheduler: "cosine"
+  min_lr: 0.000001
+  gradient_clip: 10.0
+  mixed_precision: true
+
+  # EMA
+  use_ema: true
+  ema_decay: 0.9999
+
+  # Checkpoint saving
+  save_freq: 5          # Save every N epochs
+  best_metric: "val_loss"
+
+# Loss weights for each model component
+loss_weights:
+  m1_bbox: 5.0
+  m1_cls: 1.0
+  m1_obj: 1.0
+  m2_occlusion: 1.0
+  m2_self_supervised: 0.5
+  m3_sr: 0.5
+  m4_depth: 0.5
+  m5_context: 0.3
+  m6_amodal: 0.5
+  m7_calibration: 0.2
+
+# Curriculum learning for occlusion
+curriculum:
+  enabled: true
+  warmup_epochs: 10       # No synthetic occlusion for first N epochs
+  ramp_epochs: 30         # Linearly increase difficulty over N epochs
+  max_occlusion_ratio: 0.7
+  max_num_occluders: 5
+
+# Data augmentation
+augmentation:
+  image_size: 640
+  horizontal_flip: 0.5
+  color_jitter: 0.3
+  affine_scale: [0.5, 1.5]
+  affine_rotate: [-10, 10]
+  mosaic: false           # Disable for joint (can interfere with occlusion curriculum)
+  mixup: 0.0
+
+# Validation
+validation:
+  eval_freq: 1           # Validate every N epochs
+  batch_size: 8
+  num_workers: 4
+
+# Router
+router:
+  temperature_decay: 0.95
+  freeze_epochs: 20       # Freeze router for first N epochs during joint training

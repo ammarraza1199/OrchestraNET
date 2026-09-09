@@ -1,0 +1,29 @@
+# M5 Semantic Context Engine Configuration
+model:
+  name: "m5_context"
+  description: "Scene-level semantic understanding for contextual priors"
+
+  architecture:
+    type: "context_head"
+    in_channels: 256               # P5 global features
+    scene_embed_dim: 128           # Scene type embedding dimension
+    num_scene_classes: 365         # Places365 scene categories
+    context_attention:
+      num_heads: 4
+      head_dim: 32
+
+  output:
+    scene_embedding: true          # 128-dim scene type vector
+    object_priors: true            # Expected object types given scene
+    spatial_priors: true           # Expected object locations given scene
+
+  params: "~400K"
+  target_latency_gpu_ms: 0.5
+
+training:
+  loss:
+    scene_cls_loss: "cross_entropy"
+    prior_loss: "kl_divergence"
+    scene_weight: 1.0
+    prior_weight: 0.3
+  pretrain_dataset: "places365"

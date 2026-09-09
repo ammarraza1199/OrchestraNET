@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestranet"
+version = "0.1.0"
+description = "OrchestraNet: Multi-Model Orchestrated Framework for Occluded Object Detection"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "OrchestraNet Team"}
+]
+keywords = ["object-detection", "occlusion", "computer-vision", "deep-learning", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "matplotlib>=3.7.0",
+    "tensorboard>=2.14.0",
+    "pycocotools>=2.0.7",
+    "albumentations>=1.3.1",
+    "einops>=0.7.0",
+    "timm>=0.9.12",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+tensorrt = [
+    "tensorrt>=8.6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["orchestranet*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -1,0 +1,42 @@
+# M2 Occlusion Analyzer Configuration
+model:
+  name: "m2_occlusion"
+  description: "Occlusion map predictor and visibility scorer - core novelty"
+
+  architecture:
+    type: "unet_lite"
+    encoder_channels: [128, 64, 32]
+    decoder_channels: [32, 64, 128]
+    use_attention_gates: true
+    skip_connections: true
+    bottleneck_channels: 16
+
+  heads:
+    occlusion_map:
+      out_channels: 1           # Per-pixel occlusion probability
+      activation: "sigmoid"
+    visibility_score:
+      out_channels: 1           # Per-detection visibility ratio [0,1]
+      activation: "sigmoid"
+    occluder_graph:
+      enabled: true             # Predict occluder-occludee relationships
+      max_objects: 50
+
+  params: "~800K"
+  target_latency_gpu_ms: 2.0
+
+training:
+  loss:
+    occlusion_map_loss: "bce_dice"  # BCE + Dice combination
+    visibility_loss: "mse"
+    graph_loss: "cross_entropy"
+    map_weight: 1.0
+    visibility_weight: 0.5
+    graph_weight: 0.3
+
+  self_supervised:
+    enabled: true
+    mask_ratio: [0.1, 0.5]      # Random masking ratio range
+    mask_patch_size: [16, 64]   # Patch sizes for masking
+    reconstruction_loss: "bce_dice"
+    weight: 0.5                 # Weight relative to supervised loss

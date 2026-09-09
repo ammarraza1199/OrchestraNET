@@ -1,0 +1,97 @@
+# OrchestraNet Base Configuration
+# Global settings shared across all components
+
+project:
+  name: "OrchestraNet"
+  version: "0.1.0"
+
+# Input settings
+input:
+  image_size: 640
+  channels: 3
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+
+# Backbone settings
+backbone:
+  name: "mobilenetv4_hybrid"  # or "efficientnetv2_s"
+  pretrained: true
+  frozen_stages: 0  # 0 = none frozen, 1 = stem frozen, etc.
+  out_channels: [48, 80, 160, 256]  # P2, P3, P4, P5 channel dims
+  feature_levels: ["P3", "P4", "P5"]  # Which FPN levels to use
+
+# Feature Pyramid
+fpn:
+  in_channels: [80, 160, 256]   # P3, P4, P5 from backbone
+  out_channels: 128              # Unified channel dimension
+  num_outs: 3
+  use_depthwise: true            # Lightweight FPN
+
+# Router settings
+router:
+  complexity_channels: 128
+  num_levels: 3                  # simple, medium, complex
+  thresholds: [0.3, 0.7]
+  training_mode: "gumbel"        # "gumbel" for differentiable, "rl" for REINFORCE
+
+# Detection settings
+detection:
+  num_classes: 80                # COCO classes
+  score_threshold: 0.25
+  nms_iou_threshold: 0.45
+  max_detections: 300
+
+# OA-NMS settings
+oa_nms:
+  iou_threshold: 0.5
+  occlusion_threshold: 0.3      # Min visibility to consider occlusion relationship
+  depth_weight: 0.2             # Weight for depth-based ordering
+
+# Training defaults
+training:
+  batch_size: 16
+  num_workers: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  epochs: 100
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  mixed_precision: true
+  gradient_clip: 10.0
+
+# Augmentation
+augmentation:
+  synthetic_occlusion:
+    enabled: true
+    curriculum: true
+    max_occlusion_ratio: 0.7
+    num_occluders: [1, 5]
+  standard:
+    horizontal_flip: 0.5
+    mosaic: 0.5
+    mixup: 0.1
+    color_jitter: 0.3
+    scale_range: [0.5, 1.5]
+
+# Paths
+paths:
+  data_root: "./data"
+  coco_root: "./data/coco"
+  cocoa_root: "./data/cocoa"
+  kins_root: "./data/kins"
+  checkpoints: "./checkpoints"
+  logs: "./logs"
+  exports: "./exports"
+
+# Device
+device:
+  gpu_ids: [0]
+  sync_bn: false
+
+# Logging
+logging:
+  print_freq: 50
+  save_freq: 5           # Save every N epochs
+  tensorboard: true
+  wandb: false

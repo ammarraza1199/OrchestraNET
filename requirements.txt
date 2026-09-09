@@ -1,0 +1,31 @@
+# Core
+torch>=2.2.0
+torchvision>=0.17.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Config & Logging
+pyyaml>=6.0
+tqdm>=4.65.0
+tensorboard>=2.14.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Dataset & Metrics
+pycocotools>=2.0.7
+
+# Augmentation
+albumentations>=1.3.1
+
+# Model Building
+einops>=0.7.0
+timm>=0.9.12
+
+# Export
+onnx>=1.15.0
+onnxruntime>=1.16.0
+
+# Dev
+pytest>=7.4.0

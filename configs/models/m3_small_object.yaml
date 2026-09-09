@@ -1,0 +1,31 @@
+# M3 Small Object Enhancer Configuration
+model:
+  name: "m3_small_enhancer"
+  description: "Super-resolution + refined detection for small objects"
+
+  architecture:
+    type: "sr_detect_head"
+    sr_branch:
+      upscale_factor: 2
+      num_residual_blocks: 3
+      channels: 32
+      activation: "relu"
+    detect_refinement:
+      in_channels: 32
+      hidden_channels: 64
+      num_convs: 2
+
+  crop_settings:
+    min_object_area: 32         # Pixels^2 — objects smaller trigger this model
+    crop_padding: 1.5           # Padding ratio around small object candidates
+    max_crops: 20               # Max crops per frame
+
+  params: "~600K"
+  target_latency_gpu_ms: 1.5
+
+training:
+  loss:
+    sr_loss: "l1"
+    detection_loss: "ciou"
+    sr_weight: 0.3
+    det_weight: 1.0

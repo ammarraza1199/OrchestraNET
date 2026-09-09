@@ -1,0 +1,40 @@
+# M1 Primary Detector Configuration
+model:
+  name: "m1_detector"
+  description: "Primary object detection head - always active"
+  
+  architecture:
+    type: "yolo_nano_head"
+    use_depthwise: true
+    num_anchors: 3
+    anchor_sizes:
+      P3: [[10, 13], [16, 30], [33, 23]]      # Small objects
+      P4: [[30, 61], [62, 45], [59, 119]]      # Medium objects
+      P5: [[116, 90], [156, 198], [373, 326]]   # Large objects
+
+  head:
+    in_channels: 128         # From FPN
+    hidden_channels: 64
+    num_convs: 2
+    activation: "silu"
+    norm: "batch_norm"
+
+  output:
+    bbox_format: "xyxy"      # x1, y1, x2, y2
+    objectness: true
+    num_classes: 80
+
+  # Estimated complexity
+  params: "~1.2M"
+  target_latency_gpu_ms: 1.5
+  target_latency_cpu_ms: 8.0
+
+training:
+  loss:
+    bbox_loss: "ciou"         # Complete IoU loss
+    cls_loss: "bce"
+    obj_loss: "bce"
+    bbox_weight: 5.0
+    cls_weight: 1.0
+    obj_weight: 1.0
+  label_smoothing: 0.0

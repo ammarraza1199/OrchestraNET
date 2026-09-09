@@ -1,0 +1,32 @@
+# M7 Confidence Calibrator Configuration
+model:
+  name: "m7_calibrator"
+  description: "Recalibrates detection confidence using occlusion awareness"
+
+  architecture:
+    type: "calibration_mlp"
+    input_features:
+      - "m1_confidence"           # Raw detection confidence
+      - "m2_visibility"           # Visibility ratio from M2
+      - "m4_depth"                # Depth value at detection center
+      - "m5_context"              # Scene context embedding (reduced)
+      - "bbox_area"               # Normalized bbox area
+      - "aspect_ratio"            # Bbox aspect ratio
+    input_dim: 134                # Total input feature dimension
+    hidden_layers: [128, 64, 32]
+    dropout: 0.1
+    activation: "gelu"
+    temperature_scaling: true
+
+  output:
+    calibrated_confidence: true   # Recalibrated [0, 1] score
+    occlusion_adjusted: true      # Whether occlusion adjustment was applied
+
+  params: "~100K"
+  target_latency_gpu_ms: 0.2
+
+training:
+  loss:
+    calibration_loss: "focal"
+    ece_regularization: true      # Expected Calibration Error penalty
+    weight: 1.0

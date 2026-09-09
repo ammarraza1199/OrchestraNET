@@ -1,0 +1,101 @@
+# ================================
+# OrchestraNet - Git Ignore
+# ================================
+
+# ---- Datasets ----
+data/
+datasets/
+KINS/
+kins/
+COCO/
+coco/
+KITTI/
+kitti/
+
+# Dataset archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# ---- Training outputs ----
+checkpoints/
+checkpoint/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+*.trt
+
+# ---- Logs / experiments ----
+logs/
+runs/
+experiment/
+experiments/
+outputs/
+artifacts/
+tensorboard/
+wandb/
+mlruns/
+
+# TensorBoard
+events.out.tfevents.*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Jupyter / Colab ----
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+.colab/
+drive/
+content/
+
+# ---- OS / IDE ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Temporary / backup files ----
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+*.before_*
+*.orig
+
+# ---- Secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Local experiment directories ----
+*_runs/
+*_run/
+sanity/
+debug/
+debug_runs/

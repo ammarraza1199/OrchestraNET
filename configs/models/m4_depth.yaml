@@ -1,0 +1,28 @@
+# M4 Depth Estimator Configuration
+model:
+  name: "m4_depth"
+  description: "Monocular pseudo-depth estimation for occlusion ordering"
+
+  architecture:
+    type: "dpt_lite"
+    encoder_channels: [128, 128]     # Uses P4 + P5 from FPN
+    decoder_channels: [64, 32]
+    num_heads: 4                     # Lightweight transformer attention
+    head_dim: 32
+    num_decoder_layers: 2
+    output_channels: 1               # Relative depth map
+
+  output:
+    depth_format: "relative"         # Relative depth (0=near, 1=far)
+    resolution_fraction: 0.25        # Output at 1/4 input resolution
+
+  params: "~1M"
+  target_latency_gpu_ms: 2.0
+
+training:
+  loss:
+    depth_loss: "scale_invariant_log"  # Scale-invariant loss
+    gradient_loss: "l1"                # Edge-aware gradient loss
+    depth_weight: 1.0
+    gradient_weight: 0.5
+  pretrain_dataset: "nyu_depth_v2"

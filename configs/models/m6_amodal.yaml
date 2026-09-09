@@ -1,0 +1,38 @@
+# M6 Amodal Completer Configuration
+model:
+  name: "m6_amodal"
+  description: "Predicts complete (amodal) shapes for partially visible objects"
+
+  architecture:
+    type: "conditional_shape_decoder"
+    transformer_decoder:
+      num_layers: 2
+      d_model: 128
+      num_heads: 4
+      dim_feedforward: 256
+      dropout: 0.1
+    shape_head:
+      in_channels: 128
+      hidden_channels: 64
+      mask_resolution: 28          # 28x28 amodal mask per detection
+
+  input:
+    detection_features: true       # From M1
+    occlusion_maps: true           # From M2
+    max_objects: 50
+
+  output:
+    amodal_bbox: true              # Complete bounding box (extends beyond visible)
+    amodal_mask: true              # Complete object shape mask
+    completion_confidence: true    # How confident is the completion
+
+  params: "~900K"
+  target_latency_gpu_ms: 2.0
+
+training:
+  loss:
+    amodal_bbox_loss: "giou"
+    amodal_mask_loss: "bce_dice"
+    bbox_weight: 1.0
+    mask_weight: 0.5
+  datasets: ["cocoa", "d2sa"]

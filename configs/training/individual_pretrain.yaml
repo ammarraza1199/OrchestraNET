@@ -1,0 +1,71 @@
+# OrchestraNet — Individual Pre-training Configuration
+# Per-model hyperparameters for Phase 1 pre-training.
+
+# Default training settings (can be overridden per model)
+defaults:
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 3
+  mixed_precision: true
+  gradient_clip: 10.0
+  use_ema: true
+  num_workers: 4
+
+# Per-model configuration
+models:
+  m1:
+    task: "detection"
+    dataset: "coco"
+    epochs: 50
+    batch_size: 16
+    learning_rate: 0.001
+    description: "YOLO-Nano detection head on COCO"
+
+  m2:
+    task: "occlusion"
+    dataset: "coco"           # Uses synthetic occlusion augmentation
+    epochs: 30
+    batch_size: 16
+    learning_rate: 0.001
+    self_supervised_weight: 0.5
+    description: "Occlusion analysis with self-supervised pretext"
+
+  m3:
+    task: "small_object"
+    dataset: "coco"           # Focus on small objects in COCO
+    epochs: 30
+    batch_size: 16
+    learning_rate: 0.0005
+    description: "Super-resolution + small object detection"
+
+  m4:
+    task: "depth"
+    dataset: "coco"           # Self-supervised depth (no GT needed)
+    epochs: 30
+    batch_size: 16
+    learning_rate: 0.0005
+    description: "Monocular depth estimation"
+
+  m5:
+    task: "context"
+    dataset: "coco"           # Scene classification from COCO images
+    epochs: 20
+    batch_size: 32
+    learning_rate: 0.001
+    description: "Scene classification and context priors"
+
+  m6:
+    task: "amodal"
+    dataset: "coco"           # Uses synthetic occlusion for amodal completion
+    epochs: 30
+    batch_size: 16
+    learning_rate: 0.0005
+    description: "Amodal bbox and mask completion"
+
+# Backbone settings
+backbone:
+  freeze: false               # Whether to freeze backbone during pre-training
+  pretrained: true
