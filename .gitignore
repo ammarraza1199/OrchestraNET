@@ -3,14 +3,14 @@
 # ================================
 
 # ---- Datasets ----
-data/
-datasets/
-KINS/
-kins/
-COCO/
-coco/
-KITTI/
-kitti/
+/data/
+/datasets/
+/KINS/
+/kins/
+/COCO/
+/coco/
+/KITTI/
+/kitti/
 
 # Dataset archives
 *.zip
