@@ -423,7 +423,7 @@ class KINSAmodalDataset(Dataset):
             except Exception:
                 image_tensor = (
                     torch.from_numpy(
-                        np.asarray(image)
+                        np.asarray(image).copy()
                     )
                     .permute(2, 0, 1)
                     .float()
@@ -432,7 +432,7 @@ class KINSAmodalDataset(Dataset):
         else:
             image_tensor = (
                 torch.from_numpy(
-                    np.asarray(image)
+                    np.asarray(image).copy()
                 )
                 .permute(2, 0, 1)
                 .float()
