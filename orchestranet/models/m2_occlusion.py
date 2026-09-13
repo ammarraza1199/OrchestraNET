@@ -106,11 +106,15 @@ class M2OcclusionAnalyzer(BaseMicroModel):
             gt = targets["occlusion_mask"]
             pred = predictions["occlusion_map"]
             gt_resized = F.interpolate(gt, size=pred.shape[2:], mode="nearest")
-            bce = F.binary_cross_entropy(pred, gt_resized)
-            # Dice loss for better boundary prediction
-            inter = (pred * gt_resized).sum()
-            dice = 1 - (2 * inter + 1) / (pred.sum() + gt_resized.sum() + 1)
-            return {"occ_loss": bce + dice, "total_loss": bce + dice}
+            with torch.amp.autocast("cuda", enabled=False):
+                pred_fp32 = pred.float()
+                gt_fp32 = gt_resized.float()
+                bce = F.binary_cross_entropy(pred_fp32, gt_fp32)
+                # Dice loss for better boundary prediction
+                inter = (pred_fp32 * gt_fp32).sum()
+                dice = 1 - (2 * inter + 1) / (pred_fp32.sum() + gt_fp32.sum() + 1)
+                loss = bce + dice
+            return {"occ_loss": loss, "total_loss": loss}
         return {"occ_loss": torch.tensor(0.0, device=device),
                 "total_loss": torch.tensor(0.0, device=device)}
 
@@ -118,10 +122,13 @@ class M2OcclusionAnalyzer(BaseMicroModel):
         """Self-supervised pretext: predict where artificial occlusion was applied."""
         pred = self.forward(features_masked)["occlusion_map"]
         mask_resized = F.interpolate(original_mask, size=pred.shape[2:], mode="nearest")
-        bce = F.binary_cross_entropy(pred, mask_resized)
-        inter = (pred * mask_resized).sum()
-        dice = 1 - (2 * inter + 1) / (pred.sum() + mask_resized.sum() + 1)
-        return bce + dice
+        with torch.amp.autocast("cuda", enabled=False):
+            pred_fp32 = pred.float()
+            mask_fp32 = mask_resized.float()
+            bce = F.binary_cross_entropy(pred_fp32, mask_fp32)
+            inter = (pred_fp32 * mask_fp32).sum()
+            dice = 1 - (2 * inter + 1) / (pred_fp32.sum() + mask_fp32.sum() + 1)
+            return bce + dice
 
     def required_levels(self):
         return ["P3"]
