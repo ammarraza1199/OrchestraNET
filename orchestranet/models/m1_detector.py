@@ -272,10 +272,16 @@ class M1PrimaryDetector(BaseMicroModel):
 
             n_matched = len(matched_pred_indices)
             if n_matched == 0:
-                obj_target = torch.zeros_like(b_pred_obj)
-                total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
-                    b_pred_obj, obj_target, reduction="mean"
-                )
+                with torch.amp.autocast("cuda", enabled=False):
+                    obj_pred = b_pred_obj.float()
+                    obj_target = torch.zeros_like(obj_pred)
+
+                    total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
+                        obj_pred,
+                        obj_target,
+                        reduction="mean"
+                    )
+
                 continue
 
             pred_idx = torch.tensor(matched_pred_indices, dtype=torch.long, device=device)
@@ -297,14 +303,19 @@ class M1PrimaryDetector(BaseMicroModel):
             total_cls_loss = total_cls_loss + cls_loss
 
             # === Objectness Loss (BCE) ===
-            obj_target = torch.zeros_like(b_pred_obj)
-            # Positive targets: IoU with matched GT
-            obj_target[pred_idx] = giou.detach().clamp(0, 1).to(
-                b_pred_obj.dtype
-            )
-            obj_loss = F.binary_cross_entropy_with_logits(
-                b_pred_obj, obj_target, reduction="mean"
-            )
+            # Keep BCE in FP32 for AMP numerical stability.
+            with torch.amp.autocast("cuda", enabled=False):
+                obj_pred = b_pred_obj.float()
+                obj_target = torch.zeros_like(obj_pred)
+
+                # Positive targets: IoU with matched GT
+                obj_target[pred_idx] = giou.detach().float().clamp(0, 1)
+
+                obj_loss = F.binary_cross_entropy_with_logits(
+                    obj_pred,
+                    obj_target,
+                    reduction="mean"
+                )
             total_obj_loss = total_obj_loss + obj_loss
 
             num_pos += n_matched
