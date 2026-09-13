@@ -12,7 +12,7 @@ from pycocotools import mask as mask_utils
 
 class KINSAmodalDataset(Dataset):
     """
-    KINS dataset adapter for OrchestraNet M6 amodal completion.
+    KINS dataset adapter for OrchestraNet M6 amodal completion and M2 occlusion.
 
     Returns:
         image:
@@ -35,6 +35,9 @@ class KINSAmodalDataset(Dataset):
 
             is_occluded:
                 [50] binary occlusion targets
+
+            occlusion_mask:
+                [1, 640, 640] image-level binary occlusion mask
     """
 
     def __init__(
@@ -316,7 +319,7 @@ class KINSAmodalDataset(Dataset):
             )
 
         # ------------------------------------------------------------
-        # M6 targets
+        # M6 & M2 targets
         # ------------------------------------------------------------
         amodal_boxes = torch.zeros(
             (self.max_objects, 4),
@@ -330,6 +333,11 @@ class KINSAmodalDataset(Dataset):
 
         is_occluded = torch.zeros(
             (self.max_objects,),
+            dtype=torch.float32,
+        )
+
+        occlusion_mask = torch.zeros(
+            (1, self.image_size, self.image_size),
             dtype=torch.float32,
         )
 
@@ -364,30 +372,48 @@ class KINSAmodalDataset(Dataset):
             )
 
             # --------------------------------------------------------
-            # Amodal segmentation
+            # Amodal & visible segmentations for M2 / M6
             # --------------------------------------------------------
-            segmentation = ann.get("a_segm")
+            a_segm = ann.get("a_segm")
+            i_segm = ann.get("i_segm")
 
-            mask = self._decode_polygon(
-                segmentation,
+            a_mask = self._decode_polygon(
+                a_segm,
+                original_height,
+                original_width,
+            )
+            i_mask = self._decode_polygon(
+                i_segm,
                 original_height,
                 original_width,
             )
 
-            # Resize mask to the same geometry as the image.
-            mask_tensor = torch.from_numpy(
-                mask.astype(np.float32)
+            # Resize both masks to (image_size, image_size) using nearest-neighbor
+            a_tensor = torch.from_numpy(
+                a_mask.astype(np.float32)
+            ).unsqueeze(0).unsqueeze(0)
+            i_tensor = torch.from_numpy(
+                i_mask.astype(np.float32)
             ).unsqueeze(0).unsqueeze(0)
 
-            mask_tensor = F.interpolate(
-                mask_tensor,
+            amodal_mask = F.interpolate(
+                a_tensor,
                 size=(self.image_size, self.image_size),
                 mode="nearest",
-            )
+            )[0, 0]
 
-            resized_mask = mask_tensor[0, 0].numpy()
+            visible_mask = F.interpolate(
+                i_tensor,
+                size=(self.image_size, self.image_size),
+                mode="nearest",
+            )[0, 0]
 
-            # Transform amodal bbox to resized coordinates.
+            # Compute object occlusion and union into image-level occlusion_mask
+            object_occlusion = (amodal_mask > 0.5) & (visible_mask < 0.5)
+            occlusion_mask[0, object_occlusion] = 1.0
+
+            # Transform amodal bbox to resized coordinates and crop 28x28 for M6
+            resized_mask = amodal_mask.numpy()
             mask_bbox = amodal_bbox
 
             object_mask = self._resize_mask_crop(
@@ -449,6 +475,7 @@ class KINSAmodalDataset(Dataset):
             "amodal_boxes": amodal_boxes,
             "amodal_masks": amodal_masks,
             "is_occluded": is_occluded,
+            "occlusion_mask": occlusion_mask,
         }
 
         return image_tensor, targets
