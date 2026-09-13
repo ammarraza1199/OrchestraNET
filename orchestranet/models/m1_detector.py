@@ -109,20 +109,45 @@ def focal_loss(
 ) -> torch.Tensor:
     """
     Focal loss for dense classification.
+
+    The loss is explicitly computed in FP32 so that AMP does not
+    create dtype mismatches between FP16 logits and FP32 targets.
+
     Args:
         logits: (N, C) raw class logits
         targets: (N,) integer class labels
     """
     num_classes = logits.shape[-1]
-    # One-hot encode targets
-    target_one_hot = F.one_hot(targets.long(), num_classes).float()
 
-    p = torch.sigmoid(logits)
-    ce = F.binary_cross_entropy_with_logits(logits, target_one_hot, reduction="none")
-    p_t = p * target_one_hot + (1 - p) * (1 - target_one_hot)
-    alpha_t = alpha * target_one_hot + (1 - alpha) * (1 - target_one_hot)
-    focal_weight = alpha_t * (1 - p_t) ** gamma
-    return (focal_weight * ce).sum(-1).mean()
+    with torch.amp.autocast("cuda", enabled=False):
+        logits_fp32 = logits.float()
+
+        target_one_hot = F.one_hot(
+            targets.long(),
+            num_classes
+        ).float()
+
+        p = torch.sigmoid(logits_fp32)
+
+        ce = F.binary_cross_entropy_with_logits(
+            logits_fp32,
+            target_one_hot,
+            reduction="none"
+        )
+
+        p_t = (
+            p * target_one_hot
+            + (1 - p) * (1 - target_one_hot)
+        )
+
+        alpha_t = (
+            alpha * target_one_hot
+            + (1 - alpha) * (1 - target_one_hot)
+        )
+
+        focal_weight = alpha_t * (1 - p_t) ** gamma
+
+        return (focal_weight * ce).sum(-1).mean()
 
 
 class M1PrimaryDetector(BaseMicroModel):
@@ -223,11 +248,16 @@ class M1PrimaryDetector(BaseMicroModel):
                 n_gt = valid.sum().item()
 
             if n_gt == 0:
-                # No GT — all objectness targets are 0
-                obj_target = torch.zeros_like(pred_obj[b, :, 0])
-                total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
-                    pred_obj[b, :, 0], obj_target, reduction="mean"
-                )
+                with torch.amp.autocast("cuda", enabled=False):
+                    obj_pred = pred_obj[b, :, 0].float()
+                    obj_target = torch.zeros_like(obj_pred)
+
+                    total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
+                        obj_pred,
+                        obj_target,
+                        reduction="mean"
+                    )
+
                 continue
 
             gt_boxes_valid = gt_boxes[:n_gt].to(device)   # (n_gt, 4)
