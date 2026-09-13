@@ -102,7 +102,8 @@ class KINSAmodalDataset(Dataset):
             self.root / file_name,
             self.root / "training" / "image_2" / Path(file_name).name,
             self.root / "testing" / "image_2" / Path(file_name).name,
-            self.root / "training" / "image_2" / file_name,
+            self.root / "KINS" / "training" / "image_2" / Path(file_name).name,
+            self.root / "KINS" / "testing" / "image_2" / Path(file_name).name,
         ]
 
         for path in candidates:
