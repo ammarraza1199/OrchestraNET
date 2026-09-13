@@ -299,7 +299,9 @@ class M1PrimaryDetector(BaseMicroModel):
             # === Objectness Loss (BCE) ===
             obj_target = torch.zeros_like(b_pred_obj)
             # Positive targets: IoU with matched GT
-            obj_target[pred_idx] = giou.detach().clamp(0, 1)
+            obj_target[pred_idx] = giou.detach().clamp(0, 1).to(
+                b_pred_obj.dtype
+            )
             obj_loss = F.binary_cross_entropy_with_logits(
                 b_pred_obj, obj_target, reduction="mean"
             )
