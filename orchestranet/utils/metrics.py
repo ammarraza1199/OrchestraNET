@@ -74,6 +74,33 @@ class DetectionMetrics:
             "labels": np.array(gt_labels),
         }
 
+    def update_with_visibility(self, pred_boxes, pred_scores, pred_labels,
+                                gt_boxes, gt_labels, gt_visibility, image_id=None):
+        """
+        Add predictions and ground truths for one image, including per-GT-box
+        visibility ratios for downstream occlusion-aware metric computation.
+
+        Args:
+            gt_visibility: (N,) array-like of float32 in [0, 1] — fraction of
+                           the object that is visible.  One entry per GT box.
+                           Used by OcclusionAwareMetrics to compute AP_occ
+                           (visibility < 30%), AP_partial, and AP_visible.
+
+        All other args are identical to update().  Backward-compatible: callers
+        using update() are unaffected.
+        """
+        key = image_id if image_id is not None else len(self.predictions)
+        self.predictions[key] = {
+            "boxes": np.array(pred_boxes),
+            "scores": np.array(pred_scores),
+            "labels": np.array(pred_labels),
+        }
+        self.ground_truths[key] = {
+            "boxes": np.array(gt_boxes),
+            "labels": np.array(gt_labels),
+            "visibility": np.array(gt_visibility, dtype=np.float32),
+        }
+
     def compute(self) -> dict[str, float]:
         """Compute all metrics."""
         results = {}
