@@ -94,38 +94,86 @@ class M3SmallObjectEnhancer(BaseMicroModel):
           2. Bbox refinement loss: Smooth L1 on delta predictions (supervised
              only when GT is available for small objects)
           3. Confidence calibration: BCE loss on confidence predictions
+
+        Loss calculations are performed in FP32 for AMP numerical stability.
         """
-        device = predictions["enhanced_features"].device
-        enhanced = predictions["enhanced_features"]       # (B, C, 2H, 2W)
-        compressed = predictions["compressed_input"]       # (B, C, H, W)
+        enhanced = predictions["enhanced_features"]
+        compressed = predictions["compressed_input"]
 
-        # === SR Reconstruction Loss ===
-        # The enhanced features should reconstruct a bilinearly upsampled version
-        # of the input, but with sharper details from residual learning
-        target_sr = F.interpolate(
-            compressed.detach(), size=enhanced.shape[2:],
-            mode="bilinear", align_corners=False
-        )
-        sr_loss = F.l1_loss(enhanced, target_sr)
+        # ============================================================
+        # AMP-SAFE LOSS COMPUTATION
+        # ============================================================
+        # Model activations may be FP16 under AMP. Perform all loss
+        # calculations in FP32 to avoid dtype mismatch / instability.
+        with torch.amp.autocast("cuda", enabled=False):
 
-        # === Feature Consistency Loss ===
-        # Downsampled enhanced should match compressed input
-        down = F.adaptive_avg_pool2d(enhanced, compressed.shape[2:])
-        consistency_loss = F.mse_loss(down, compressed.detach())
+            enhanced_fp32 = enhanced.float()
+            compressed_fp32 = compressed.detach().float()
 
-        # === Confidence Calibration Loss ===
-        # Train confidence head to predict ~1 for real objects, ~0 elsewhere
-        conf = predictions["confidence_boost"]  # (B, 1, 2H, 2W)
-        # Without explicit small-object GT, use self-supervised signal:
-        # high-activation regions should have high confidence
-        with torch.no_grad():
-            activation_strength = enhanced.abs().mean(dim=1, keepdim=True)
-            activation_strength = activation_strength / (activation_strength.max() + 1e-6)
-            # Threshold to create soft targets
-            conf_target = (activation_strength > 0.5).float()
-        conf_loss = F.binary_cross_entropy(conf, conf_target)
+            # ========================================================
+            # SR Reconstruction Loss
+            # ========================================================
+            target_sr = F.interpolate(
+                compressed_fp32,
+                size=enhanced_fp32.shape[2:],
+                mode="bilinear",
+                align_corners=False,
+            )
 
-        total = sr_loss + 0.5 * consistency_loss + 0.1 * conf_loss
+            sr_loss = F.l1_loss(
+                enhanced_fp32,
+                target_sr,
+            )
+
+            # ========================================================
+            # Feature Consistency Loss
+            # ========================================================
+            down = F.adaptive_avg_pool2d(
+                enhanced_fp32,
+                compressed_fp32.shape[2:],
+            )
+
+            consistency_loss = F.mse_loss(
+                down,
+                compressed_fp32,
+            )
+
+            # ========================================================
+            # Confidence Calibration Loss
+            # ========================================================
+            conf_fp32 = predictions["confidence_boost"].float()
+
+            # Self-supervised confidence target:
+            # high-activation regions receive higher confidence.
+            with torch.no_grad():
+
+                activation_strength = (
+                    enhanced_fp32.abs()
+                    .mean(dim=1, keepdim=True)
+                )
+
+                activation_strength = (
+                    activation_strength
+                    / (activation_strength.max() + 1e-6)
+                )
+
+                conf_target = (
+                    activation_strength > 0.5
+                ).float()
+
+            conf_loss = F.binary_cross_entropy(
+                conf_fp32,
+                conf_target,
+            )
+
+            # ========================================================
+            # TOTAL LOSS
+            # ========================================================
+            total = (
+                sr_loss
+                + 0.5 * consistency_loss
+                + 0.1 * conf_loss
+            )
 
         return {
             "sr_loss": sr_loss,
