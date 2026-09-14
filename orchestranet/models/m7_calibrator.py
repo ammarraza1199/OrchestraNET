@@ -35,14 +35,22 @@ class M7ConfidenceCalibrator(BaseMicroModel):
         # Learnable temperature for calibration
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
 
-        # Adaptive projection to handle variable input dimensions
-        self.adaptive_proj = None  # Lazily initialized
+        # FPN P5 provides 128 channels; project them to the
+        # expected 134-dimensional calibration input.
+        self.adaptive_proj = nn.Linear(
+            128,
+            self.input_dim,
+            bias=False
+        )
+        nn.init.kaiming_normal_(self.adaptive_proj.weight)
 
     def _get_projection(self, feat_dim: int, device: torch.device) -> nn.Linear:
-        """Lazily create a projection layer to map features to expected input_dim."""
-        if self.adaptive_proj is None or self.adaptive_proj.in_features != feat_dim:
-            self.adaptive_proj = nn.Linear(feat_dim, self.input_dim, bias=False).to(device)
-            nn.init.kaiming_normal_(self.adaptive_proj.weight)
+        """Return the initialized projection for the expected feature dimension."""
+        if feat_dim != self.adaptive_proj.in_features:
+            raise ValueError(
+                f"M7 expected {self.adaptive_proj.in_features} input features "
+                f"from fallback FPN path, but received {feat_dim}."
+            )
         return self.adaptive_proj
 
     def forward(self, features, context=None):
