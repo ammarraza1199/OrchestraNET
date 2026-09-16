@@ -400,8 +400,6 @@ class OcclusionAwareMetrics:
         for iou_thresh in self.iou_thresholds:
             cls_recalls = []
             for cls in range(self.num_classes):
-                _, _, all_matches, total_gt = (*self._class_pr_arrays(cls, stratum, iou_thresh), )
-                # Unpack properly
                 scores_m, matches_m, tgt_m = self._class_pr_arrays(cls, stratum, iou_thresh)
                 if tgt_m == 0 or len(scores_m) == 0:
                     continue

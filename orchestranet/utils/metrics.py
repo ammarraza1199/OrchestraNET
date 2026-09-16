@@ -26,8 +26,11 @@ def compute_iou(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
 
 def compute_ap(recall: np.ndarray, precision: np.ndarray) -> float:
     """Compute Average Precision using 101-point interpolation (COCO-style)."""
+    if len(recall) == 0 or len(precision) == 0 or np.all(recall == 0):
+        return 0.0
+
     mrec = np.concatenate(([0.0], recall, [1.0]))
-    mpre = np.concatenate(([1.0], precision, [0.0]))
+    mpre = np.concatenate(([0.0], precision, [0.0]))
 
     # Ensure precision is monotonically decreasing
     for i in range(len(mpre) - 2, -1, -1):
@@ -63,7 +66,7 @@ class DetectionMetrics:
     def update(self, pred_boxes, pred_scores, pred_labels,
                gt_boxes, gt_labels, image_id=None):
         """Add predictions and ground truths for one image."""
-        key = image_id or len(self.predictions)
+        key = image_id if image_id is not None else len(self.predictions)
         self.predictions[key] = {
             "boxes": np.array(pred_boxes),
             "scores": np.array(pred_scores),
@@ -184,6 +187,6 @@ class DetectionMetrics:
         tp = np.cumsum(matches)
         fp = np.cumsum(~matches)
         recall = tp / total_gt
-        precision = tp / (tp + fp)
+        precision = tp / (tp + fp + 1e-9)
 
         return compute_ap(recall, precision)

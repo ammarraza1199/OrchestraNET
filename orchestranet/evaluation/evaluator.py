@@ -314,20 +314,23 @@ class SystemEvaluator:
             # GT
             n = int(targets["num_objects"][b].item()) if "num_objects" in targets else \
                 targets["boxes"].shape[1]
-            gt_boxes  = targets["boxes"][b][:n].numpy()
-            gt_labels = targets["labels"][b][:n].numpy()
+            gt_boxes_t = targets["boxes"][b][:n]
+            gt_labels_t = targets["labels"][b][:n]
+            gt_boxes  = gt_boxes_t.detach().cpu().numpy() if isinstance(gt_boxes_t, torch.Tensor) else np.asarray(gt_boxes_t)
+            gt_labels = gt_labels_t.detach().cpu().numpy() if isinstance(gt_labels_t, torch.Tensor) else np.asarray(gt_labels_t)
             gt_vis    = None
             if compute_occlusion and "visibility_ratio" in targets:
-                gt_vis = targets["visibility_ratio"][b][:n].numpy()
+                gt_vis_t = targets["visibility_ratio"][b][:n]
+                gt_vis = gt_vis_t.detach().cpu().numpy() if isinstance(gt_vis_t, torch.Tensor) else np.asarray(gt_vis_t)
 
             # Predictions
             if det is None or det.get("boxes") is None or len(det["boxes"]) == 0:
                 pred_boxes, pred_scores, pred_labels = [], [], []
             else:
                 mask        = det["scores"] > conf_thresh
-                pred_boxes  = det["boxes"][mask].cpu().numpy()
-                pred_scores = det["scores"][mask].cpu().numpy()
-                pred_labels = det["labels"][mask].cpu().numpy()
+                pred_boxes  = det["boxes"][mask].detach().cpu().numpy()
+                pred_scores = det["scores"][mask].detach().cpu().numpy()
+                pred_labels = det["labels"][mask].detach().cpu().numpy()
 
             # Accumulate into registry
             self._registry.update_detection_with_visibility(

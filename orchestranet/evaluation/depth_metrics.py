@@ -77,6 +77,8 @@ class DepthMetrics:
         self._sq_rel_sum:  float = 0.0
         self._rmse_sum:    float = 0.0
         self._rmselog_sum: float = 0.0
+        self._silog_sum:   float = 0.0
+        self._log10_sum:   float = 0.0
         self._d1_sum:      float = 0.0   # δ < 1.25
         self._d2_sum:      float = 0.0   # δ < 1.25²
         self._d3_sum:      float = 0.0   # δ < 1.25³
@@ -137,6 +139,13 @@ class DepthMetrics:
             ((np.log(gt_v + 1e-9) - np.log(pred_v + 1e-9)) ** 2).mean()
         ))
 
+        # SILog: sqrt(mean(d^2) - (mean(d))^2) * 100 where d = log(pred) - log(gt)
+        diff_log = np.log(pred_v + 1e-9) - np.log(gt_v + 1e-9)
+        silog    = float(np.sqrt(np.maximum(0.0, (diff_log ** 2).mean() - (diff_log.mean() ** 2))) * 100.0)
+
+        # log10: mean(|log10(pred) - log10(gt)|)
+        log10    = float(np.abs(np.log10(pred_v + 1e-9) - np.log10(gt_v + 1e-9)).mean())
+
         # ---- delta thresholds ----
         thresh = np.maximum(gt_v / (pred_v + 1e-9), pred_v / (gt_v + 1e-9))
         d1 = float((thresh < 1.25    ).mean())
@@ -148,6 +157,8 @@ class DepthMetrics:
         self._sq_rel_sum  += float(sq_rel)
         self._rmse_sum    += rmse
         self._rmselog_sum += rmselog
+        self._silog_sum   += silog
+        self._log10_sum   += log10
         self._d1_sum      += d1
         self._d2_sum      += d2
         self._d3_sum      += d3
@@ -157,11 +168,11 @@ class DepthMetrics:
 
     def compute(self) -> dict[str, Any]:
         """
-        Compute all 7 KITTI depth metrics averaged over accumulated images.
+        Compute all canonical KITTI depth metrics averaged over accumulated images.
 
         Returns:
             Dict with keys:
-              AbsRel, SqRel, RMSE, RMSElog, d1 (δ<1.25), d2 (δ<1.25²), d3 (δ<1.25³),
+              AbsRel, SqRel, RMSE, RMSElog, SILog, log10, d1 (δ<1.25), d2 (δ<1.25²), d3 (δ<1.25³),
               n_images, n_valid_pixels.
 
             If no GT depth was provided, all metric values are UNAVAILABLE dicts.
@@ -173,6 +184,8 @@ class DepthMetrics:
                 "SqRel":         _unav,
                 "RMSE":          _unav,
                 "RMSElog":       _unav,
+                "SILog":         _unav,
+                "log10":         _unav,
                 "d1":            _unav,
                 "d2":            _unav,
                 "d3":            _unav,
@@ -188,6 +201,8 @@ class DepthMetrics:
             "SqRel":          float(self._sq_rel_sum   / n),
             "RMSE":           float(self._rmse_sum     / n),
             "RMSElog":        float(self._rmselog_sum  / n),
+            "SILog":          float(self._silog_sum    / n),
+            "log10":          float(self._log10_sum    / n),
             "d1":             float(self._d1_sum       / n),   # δ < 1.25
             "d2":             float(self._d2_sum       / n),   # δ < 1.25²
             "d3":             float(self._d3_sum       / n),   # δ < 1.25³
@@ -210,13 +225,15 @@ class DepthMetrics:
         points only.
         """
         return {
-            "AbsRel": 0.060,   # DPT-BEiT-L (best known)
-            "SqRel":  0.249,
-            "RMSE":   2.551,
+            "AbsRel":  0.060,   # DPT-BEiT-L (best known)
+            "SqRel":   0.249,
+            "RMSE":    2.551,
             "RMSElog": 0.090,
-            "d1": 0.974,
-            "d2": 0.997,
-            "d3": 0.999,
+            "SILog":   7.12,
+            "log10":   0.026,
+            "d1":      0.974,
+            "d2":      0.997,
+            "d3":      0.999,
         }
 
     # ------------------------------------------------------------------

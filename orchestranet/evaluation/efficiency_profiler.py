@@ -108,7 +108,7 @@ class EfficiencyProfiler:
         self.model.eval()
         dummy_input = dummy_input.to(self.device)
 
-        use_cuda = (self.device == "cuda" and torch.cuda.is_available())
+        use_cuda = (str(self.device).startswith("cuda") and torch.cuda.is_available())
         amp_ctx  = torch.amp.autocast("cuda", enabled=use_amp) if use_cuda else _NullContext()
 
         # Warmup
@@ -178,7 +178,7 @@ class EfficiencyProfiler:
             Dict with: peak_vram_mb, allocated_before_mb, allocated_after_mb.
             Or UNAVAILABLE dict if not on CUDA.
         """
-        if self.device != "cuda" or not torch.cuda.is_available():
+        if not str(self.device).startswith("cuda") or not torch.cuda.is_available():
             result = _Unavailable(
                 "Memory profiling requires a CUDA device. "
                 f"Current device: {self.device}."
@@ -290,12 +290,17 @@ class EfficiencyProfiler:
         If model has count_all_parameters() (OrchestraNet), uses that for
         per-component breakdown. Falls back to simple total otherwise.
         """
+        total_bytes = sum(p.numel() * p.element_size() for p in self.model.parameters())
+        model_size_mb = round(total_bytes / (1024 * 1024), 2)
+
         if hasattr(self.model, "count_all_parameters"):
             result = self.model.count_all_parameters()
+            if "TOTAL" in result:
+                result["TOTAL"]["model_size_mb"] = model_size_mb
         else:
             total     = sum(p.numel() for p in self.model.parameters())
             trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            result = {"TOTAL": {"total": total, "trainable": trainable}}
+            result = {"TOTAL": {"total": total, "trainable": trainable, "model_size_mb": model_size_mb}}
 
         self._param_count = result
         return result

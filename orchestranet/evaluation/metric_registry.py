@@ -271,23 +271,21 @@ class MetricRegistry:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def serialize_results(results: dict[str, Any]) -> dict[str, Any]:
+    def serialize_results(results: Any) -> Any:
         """
-        Convert results dict to a fully JSON-serializable form.
+        Convert results to a fully JSON-serializable form recursively.
 
-        _Unavailable values are already dicts. numpy floats are cast to Python floats.
+        Handles nested dicts, lists, numpy floats/ints/ndarrays, and UNAVAILABLE sentinels.
         """
-        out = {}
-        for k, v in results.items():
-            if isinstance(v, dict):
-                out[k] = v  # Already dict (either sub-results or UNAVAILABLE sentinel)
-            elif isinstance(v, (np.floating, np.integer)):
-                out[k] = float(v)
-            elif isinstance(v, np.ndarray):
-                out[k] = v.tolist()
-            else:
-                out[k] = v
-        return out
+        if isinstance(results, dict):
+            return {k: MetricRegistry.serialize_results(v) for k, v in results.items()}
+        elif isinstance(results, (list, tuple)):
+            return [MetricRegistry.serialize_results(v) for v in results]
+        elif isinstance(results, (np.floating, np.integer)):
+            return float(results)
+        elif isinstance(results, np.ndarray):
+            return results.tolist()
+        return results
 
     def __repr__(self) -> str:
         return (
