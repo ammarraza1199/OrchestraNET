@@ -324,10 +324,13 @@ class OcclusionAwareMetrics:
         if total_gt == 0:
             return None
 
-        order = np.argsort(-np.array(all_scores))
-        matches = np.array(all_matches)[order]
-        tp = np.cumsum(matches)
-        fp = np.cumsum(~matches)
+        if len(all_scores) == 0:
+            return 0.0
+
+        order = np.argsort(-np.asarray(all_scores, dtype=np.float32))
+        matches = np.asarray(all_matches, dtype=np.bool_)[order]
+        tp = np.cumsum(matches, dtype=np.int64)
+        fp = np.cumsum(np.logical_not(matches), dtype=np.int64)
         recall    = tp / total_gt
         precision = tp / (tp + fp + 1e-9)
         return compute_ap(recall, precision)
@@ -342,10 +345,10 @@ class OcclusionAwareMetrics:
             # Re-derive last P/R from class accumulation
             all_scores, all_matches, total_gt = self._class_pr_arrays(cls, stratum, iou_thresh)
             if total_gt > 0 and len(all_scores) > 0:
-                order = np.argsort(-np.array(all_scores))
-                matches = np.array(all_matches)[order]
-                tp = np.cumsum(matches)
-                fp = np.cumsum(~matches)
+                order = np.argsort(-np.asarray(all_scores, dtype=np.float32))
+                matches = np.asarray(all_matches, dtype=np.bool_)[order]
+                tp = np.cumsum(matches, dtype=np.int64)
+                fp = np.cumsum(np.logical_not(matches), dtype=np.int64)
                 recalls.append(float(tp[-1] / total_gt))
                 precisions.append(float(tp[-1] / (tp[-1] + fp[-1] + 1e-9)))
         mean_p = float(np.mean(precisions)) if precisions else 0.0
@@ -403,9 +406,9 @@ class OcclusionAwareMetrics:
                 scores_m, matches_m, tgt_m = self._class_pr_arrays(cls, stratum, iou_thresh)
                 if tgt_m == 0 or len(scores_m) == 0:
                     continue
-                order = np.argsort(-np.array(scores_m))
-                matches_arr = np.array(matches_m)[order]
-                tp = np.cumsum(matches_arr)
+                order = np.argsort(-np.asarray(scores_m, dtype=np.float32))
+                matches_arr = np.asarray(matches_m, dtype=np.bool_)[order]
+                tp = np.cumsum(matches_arr, dtype=np.int64)
                 cls_recalls.append(float(tp[-1] / tgt_m))
             if cls_recalls:
                 recalls.append(float(np.mean(cls_recalls)))

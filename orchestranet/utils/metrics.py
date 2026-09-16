@@ -182,6 +182,10 @@ class DetectionMetrics:
         if total_gt == 0:
             return None
 
+        if len(all_scores) == 0:
+            return 0.0
+
+        order = np.argsort(-np.asarray(all_scores, dtype=np.float32))
         matches = np.asarray(all_matches, dtype=np.bool_)[order]
         tp = np.cumsum(matches, dtype=np.int64)
         fp = np.cumsum(np.logical_not(matches), dtype=np.int64)
