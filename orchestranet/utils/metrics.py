@@ -183,9 +183,9 @@ class DetectionMetrics:
             return None
 
         order = np.argsort(-np.array(all_scores))
-        matches = np.array(all_matches)[order]
-        tp = np.cumsum(matches)
-        fp = np.cumsum(~matches)
+        matches = np.asarray(all_matches, dtype=bool)[order]
+        tp = np.cumsum(matches, dtype=np.int64)
+        fp = np.cumsum(~matches, dtype=np.int64)
         recall = tp / total_gt
         precision = tp / (tp + fp + 1e-9)
 
