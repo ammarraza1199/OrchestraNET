@@ -24,9 +24,11 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torchvision.ops import batched_nms
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -44,6 +46,7 @@ from orchestranet.losses.self_supervised_loss import (
 from orchestranet.utils.config import Config
 from orchestranet.utils.ema import ModelEMA
 from orchestranet.utils.logger import TrainingLogger, AverageMeter
+from orchestranet.utils.metrics import DetectionMetrics
 
 
 MODEL_REGISTRY = {
@@ -75,6 +78,14 @@ def parse_args():
     parser.add_argument("--warmup-epochs", type=int, default=3)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--use-ema", action="store_true", default=True)
+    parser.add_argument("--val-freq", type=int, default=1,
+                        help="Frequency (in epochs) to run validation (default: 1)")
+    parser.add_argument("--val-root", default=None,
+                        help="Path to validation images directory (defaults to <data-root>/val2017)")
+    parser.add_argument("--val-ann-file", default=None,
+                        help="Path to validation annotations JSON (defaults to <data-root>/annotations/instances_val2017.json)")
+    parser.add_argument("--val-num-images", type=int, default=None,
+                        help="Limit number of validation images (default: None = full dataset)")
     return parser.parse_args()
 
 
@@ -160,6 +171,106 @@ class IndividualTrainer:
         }
 
 
+@torch.no_grad()
+def validate_m1(
+    trainer: IndividualTrainer,
+    val_loader: DataLoader,
+    device: str,
+    conf_thresh: float = 0.25,
+    iou_thresh: float = 0.5,
+    max_detections: int = 300,
+    num_images: int | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate M1 on COCO val2017 using DetectionMetrics.
+
+    Returns:
+        dict containing:
+          - mAP@50
+          - mAP@50:95
+          - AP_small
+          - AP_medium
+          - AP_large
+    """
+    trainer.backbone.eval()
+    trainer.fpn.eval()
+    trainer.model.eval()
+
+    metrics = DetectionMetrics(num_classes=80)
+    count = 0
+
+    for images, targets in val_loader:
+        if num_images is not None and count >= num_images:
+            break
+
+        images = images.to(device)
+        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+            backbone_feats = trainer.backbone(images)
+            fpn_feats = trainer.fpn(backbone_feats)
+            predictions = trainer.model(fpn_feats)
+
+        pred_boxes_b = predictions["decoded_boxes"]
+        pred_obj_b = torch.sigmoid(predictions["objectness"]).squeeze(-1)
+        pred_cls_b = torch.sigmoid(predictions["class_logits"])
+
+        B = images.shape[0]
+        for b in range(B):
+            img_id = count + b
+            boxes = pred_boxes_b[b]
+            obj = pred_obj_b[b]
+            cls_probs = pred_cls_b[b]
+            max_cls, labels = cls_probs.max(dim=-1)
+            scores = obj * max_cls
+
+            mask = scores > conf_thresh
+            if mask.sum() == 0:
+                pred_boxes, pred_scores, pred_labels = [], [], []
+            else:
+                f_boxes = boxes[mask]
+                f_scores = scores[mask]
+                f_labels = labels[mask]
+
+                if f_boxes.shape[0] > 1000:
+                    topk_idx = f_scores.topk(1000)[1]
+                    f_boxes = f_boxes[topk_idx]
+                    f_scores = f_scores[topk_idx]
+                    f_labels = f_labels[topk_idx]
+
+                keep = batched_nms(f_boxes, f_scores, f_labels, iou_thresh)
+                if len(keep) > max_detections:
+                    keep = keep[:max_detections]
+
+                pred_boxes = f_boxes[keep].cpu().numpy()
+                pred_scores = f_scores[keep].cpu().numpy()
+                pred_labels = f_labels[keep].cpu().numpy()
+
+            # Extract ground truth
+            if "num_objects" in targets:
+                n_gt = int(targets["num_objects"][b].item())
+            else:
+                valid_gt = (targets["boxes"][b][:, 2] - targets["boxes"][b][:, 0]) > 0
+                n_gt = int(valid_gt.sum().item())
+
+            gt_boxes_t = targets["boxes"][b][:n_gt]
+            gt_labels_t = targets["labels"][b][:n_gt]
+
+            gt_boxes = gt_boxes_t.cpu().numpy() if isinstance(gt_boxes_t, torch.Tensor) else np.asarray(gt_boxes_t)
+            gt_labels = gt_labels_t.cpu().numpy() if isinstance(gt_labels_t, torch.Tensor) else np.asarray(gt_labels_t)
+
+            metrics.update(
+                pred_boxes=pred_boxes,
+                pred_scores=pred_scores,
+                pred_labels=pred_labels,
+                gt_boxes=gt_boxes,
+                gt_labels=gt_labels,
+                image_id=img_id,
+            )
+
+        count += B
+
+    return metrics.compute()
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -209,6 +320,33 @@ def main():
         num_workers=args.num_workers, pin_memory=True, drop_last=True,
     )
 
+    # Validation DataLoader for M1
+    val_loader = None
+    if args.model == "m1":
+        val_root = args.val_root if args.val_root else os.path.join(args.data_root, "val2017")
+        val_ann = args.val_ann_file if args.val_ann_file else os.path.join(args.data_root, "annotations/instances_val2017.json")
+        val_transforms = get_val_transforms(img_size=640)
+
+        if os.path.exists(val_root) and os.path.exists(val_ann):
+            val_dataset = COCODetectionDataset(
+                root=val_root,
+                ann_file=val_ann,
+                transforms=val_transforms,
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=1,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+            )
+            logger.info(f"   Validation: {len(val_dataset)} images from {val_root}")
+        else:
+            logger.warning(
+                f"⚠️  Validation dataset not found ({val_root} or {val_ann}). "
+                "Validation will be skipped."
+            )
+
     # Optimizer
     trainable_params = [p for p in trainer.all_params if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
@@ -254,15 +392,21 @@ def main():
     # Resume
     start_epoch = 0
     best_loss = float("inf")
+    best_map50 = 0.0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
+        if "backbone_state_dict" in ckpt:
+            trainer.backbone.load_state_dict(ckpt["backbone_state_dict"])
+        if "fpn_state_dict" in ckpt:
+            trainer.fpn.load_state_dict(ckpt["fpn_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt.get("epoch", 0) + 1
         best_loss = ckpt.get("best_loss", float("inf"))
+        best_map50 = ckpt.get("best_map50", 0.0)
         if ema and "ema_state_dict" in ckpt:
             ema.load_state_dict(ckpt["ema_state_dict"])
-        logger.info(f"   Resumed from epoch {start_epoch}")
+        logger.info(f"   Resumed from epoch {start_epoch} (best_loss: {best_loss:.4f}, best_map50: {best_map50:.4f})")
 
     logger.info(f"\n🚀 Training {args.model} for {args.epochs} epochs...")
 
@@ -318,32 +462,79 @@ def main():
         )
         logger.log_epoch(epoch, {"avg_loss": loss_meter.avg, "lr": optimizer.param_groups[0]["lr"]})
 
-        # Save checkpoint
-        is_best = loss_meter.avg < best_loss
+        # Validation for M1
+        val_metrics = None
+        is_best_map50 = False
+        if val_loader is not None and (epoch + 1) % args.val_freq == 0:
+            logger.info(f"  🔍 Validating M1 on COCO val2017...")
+            if ema:
+                ema.apply_shadow(trainer.model)
+
+            val_metrics = validate_m1(
+                trainer,
+                val_loader,
+                device=args.device,
+                num_images=args.val_num_images,
+            )
+
+            if ema:
+                ema.restore(trainer.model)
+
+            logger.info(
+                f"  📊 Val M1 | "
+                f"mAP@50: {val_metrics['mAP@50']:.4f} | "
+                f"mAP@50:95: {val_metrics['mAP@50:95']:.4f} | "
+                f"AP_s: {val_metrics['AP_small']:.4f} | "
+                f"AP_m: {val_metrics['AP_medium']:.4f} | "
+                f"AP_l: {val_metrics['AP_large']:.4f}"
+            )
+            for m_k, m_v in val_metrics.items():
+                logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+
+            current_map50 = val_metrics["mAP@50"]
+            if current_map50 > best_map50:
+                best_map50 = current_map50
+                is_best_map50 = True
+
+        # Base checkpoint dictionary
+        ckpt_data = {
+            "epoch": epoch,
+            "model_id": args.model,
+            "model_state_dict": trainer.model.state_dict(),
+            "backbone_state_dict": trainer.backbone.state_dict(),
+            "fpn_state_dict": trainer.fpn.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "avg_loss": loss_meter.avg,
+            "best_loss": best_loss,
+            "best_map50": best_map50,
+        }
+        if val_metrics is not None:
+            ckpt_data["val_metrics"] = val_metrics
+        if ema:
+            ckpt_data["ema_state_dict"] = ema.state_dict()
+
+        # Save m1_best_map50.pt whenever validation mAP@50 improves
+        if is_best_map50:
+            best_map_path = os.path.join(args.save_dir, f"{args.model}_best_map50.pt")
+            torch.save(ckpt_data, best_map_path)
+            logger.info(f"  🏆 New best validation mAP@50 ({best_map50:.4f}): {best_map_path}")
+
+        # Save periodic or lowest-loss checkpoints
+        is_best_loss = loss_meter.avg < best_loss
         best_loss = min(best_loss, loss_meter.avg)
 
-        if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1 or is_best:
-            ckpt_data = {
-                "epoch": epoch,
-                "model_id": args.model,
-                "model_state_dict": trainer.model.state_dict(),
-                "backbone_state_dict": trainer.backbone.state_dict(),
-                "fpn_state_dict": trainer.fpn.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "avg_loss": loss_meter.avg,
-                "best_loss": best_loss,
-            }
-            if ema:
-                ckpt_data["ema_state_dict"] = ema.state_dict()
-
+        if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1 or is_best_loss:
             path = os.path.join(args.save_dir, f"{args.model}_epoch{epoch}.pt")
             torch.save(ckpt_data, path)
             logger.info(f"  💾 Saved: {path}")
 
-            if is_best:
-                best_path = os.path.join(args.save_dir, f"{args.model}_best.pt")
-                torch.save(ckpt_data, best_path)
-                logger.info(f"  🏆 New best model: {best_path}")
+            if is_best_loss:
+                best_loss_path = os.path.join(args.save_dir, f"{args.model}_best.pt")
+                torch.save(ckpt_data, best_loss_path)
+                if args.model == "m1":
+                    logger.info(f"  📉 New lowest loss checkpoint ({best_loss:.4f}): {best_loss_path}")
+                else:
+                    logger.info(f"  🏆 New best model (loss: {best_loss:.4f}): {best_loss_path}")
 
     logger.flush()
     logger.close()
