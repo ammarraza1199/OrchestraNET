@@ -145,9 +145,9 @@ class IndividualTrainer:
         # Model forward
         predictions = self.model(fpn_features)
 
-        # Task loss
+        # Task loss (keep num_objects on CPU to avoid CUDA sync when slicing)
         targets_device = {
-            k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+            k: v.to(self.device, non_blocking=True) if (isinstance(v, torch.Tensor) and k != "num_objects") else v
             for k, v in targets.items()
         }
         losses = self.model.get_loss(predictions, targets_device)
@@ -232,7 +232,11 @@ def validate_m1(
         B = images.shape[0]
         for b in range(B):
             img_id = count + b
-            boxes = pred_boxes_b[b]
+            boxes = pred_boxes_b[b].clone()
+            # Clamp box coordinates to 640x640 canvas boundaries
+            boxes[:, 0::2] = boxes[:, 0::2].clamp(0, 640)
+            boxes[:, 1::2] = boxes[:, 1::2].clamp(0, 640)
+
             obj = pred_obj_b[b]
             cls_probs = pred_cls_b[b]
             max_cls, labels = cls_probs.max(dim=-1)
@@ -249,7 +253,8 @@ def validate_m1(
                     raw_box_min[i_coord] = min(raw_box_min[i_coord], b_min[i_coord])
                     raw_box_max[i_coord] = max(raw_box_max[i_coord], b_max[i_coord])
 
-            mask = scores > conf_thresh
+            valid_box = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+            mask = (scores > conf_thresh) & valid_box
             n_conf = int(mask.sum().item())
             total_conf += n_conf
 

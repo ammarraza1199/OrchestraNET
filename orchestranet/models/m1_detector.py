@@ -44,6 +44,14 @@ class DetectionHead(nn.Module):
             ch = hidden_channels
         self.convs = nn.Sequential(*layers)
         self.pred = nn.Conv2d(hidden_channels, num_anchors * (4 + 1 + num_classes), 1, bias=True)
+        self._init_bias()
+
+    def _init_bias(self):
+        # Initialize objectness bias to -4.595 (prior prob ~0.01) to prevent
+        # massive false-positive saturation and near-0.25 confidence explosion at start.
+        with torch.no_grad():
+            b = self.pred.bias.view(self.num_anchors, -1)
+            b[:, 4].fill_(-4.595)
 
     def forward(self, x):
         return self.pred(self.convs(x))
@@ -241,20 +249,19 @@ class M1PrimaryDetector(BaseMicroModel):
 
             # Get actual number of objects (filter padding)
             if "num_objects" in targets:
-                n_gt = targets["num_objects"][b].item()
+                num_obj_b = targets["num_objects"][b]
+                n_gt = int(num_obj_b.item() if isinstance(num_obj_b, torch.Tensor) else num_obj_b)
             else:
                 # Infer from non-zero boxes
                 valid = (gt_boxes[:, 2] - gt_boxes[:, 0]) > 0
-                n_gt = valid.sum().item()
+                n_gt = int(valid.sum().item())
 
             if n_gt == 0:
                 with torch.amp.autocast("cuda", enabled=False):
                     obj_pred = pred_obj[b, :, 0].float()
-                    obj_target = torch.zeros_like(obj_pred)
-
                     total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
                         obj_pred,
-                        obj_target,
+                        torch.zeros_like(obj_pred),
                         reduction="mean"
                     )
 
@@ -272,28 +279,24 @@ class M1PrimaryDetector(BaseMicroModel):
             with torch.no_grad():
                 cost_iou = box_iou(b_pred_boxes.detach(), gt_boxes_valid)  # (N_pred, n_gt)
 
-                # Cost = -IoU + cls cost
-                cls_cost = torch.zeros_like(cost_iou)
-                pred_cls_prob = torch.sigmoid(b_pred_cls.detach())
-                for g in range(n_gt):
-                    label = gt_labels_valid[g].long()
-                    if label < self.num_classes:
-                        cls_cost[:, g] = -pred_cls_prob[:, label]
+                # Cost = -IoU + cls cost (vectorized extraction of relevant class logits)
+                labels_clamped = gt_labels_valid.long().clamp(0, self.num_classes - 1)
+                cls_cost = -torch.sigmoid(b_pred_cls[:, labels_clamped].detach())
 
                 cost_matrix = -cost_iou + 0.5 * cls_cost  # (N_pred, n_gt)
 
-                # Top-k selection per GT (k = min(10, N_pred))
+                # Vectorized top-k per GT column in a single GPU call
                 k = min(10, b_pred_boxes.shape[0])
+                topk_vals, topk_idxs = cost_matrix.topk(k, dim=0, largest=False)  # (k, n_gt)
+                # Transfer all candidate indices in one bulk CPU operation (eliminates GPU sync loop)
+                topk_cand_list = topk_idxs.t().tolist()  # (n_gt, k)
+
                 matched_pred_indices = []
                 matched_gt_indices = []
                 used_preds = set()
 
-                for g in range(n_gt):
-                    costs = cost_matrix[:, g]
-                    topk_vals, topk_idxs = costs.topk(k, largest=False)
-                    # Find best unused prediction
-                    for idx in topk_idxs:
-                        idx_item = idx.item()
+                for g, candidates in enumerate(topk_cand_list):
+                    for idx_item in candidates:
                         if idx_item not in used_preds:
                             matched_pred_indices.append(idx_item)
                             matched_gt_indices.append(g)
@@ -304,11 +307,9 @@ class M1PrimaryDetector(BaseMicroModel):
             if n_matched == 0:
                 with torch.amp.autocast("cuda", enabled=False):
                     obj_pred = b_pred_obj.float()
-                    obj_target = torch.zeros_like(obj_pred)
-
                     total_obj_loss = total_obj_loss + F.binary_cross_entropy_with_logits(
                         obj_pred,
-                        obj_target,
+                        torch.zeros_like(obj_pred),
                         reduction="mean"
                     )
 
@@ -333,19 +334,24 @@ class M1PrimaryDetector(BaseMicroModel):
             total_cls_loss = total_cls_loss + cls_loss
 
             # === Objectness Loss (BCE) ===
-            # Keep BCE in FP32 for AMP numerical stability.
+            # Balanced foreground and background BCE in FP32 so foreground
+            # gradients are not diluted by N_pred (100k or 25k).
             with torch.amp.autocast("cuda", enabled=False):
                 obj_pred = b_pred_obj.float()
-                obj_target = torch.zeros_like(obj_pred)
-
-                # Positive targets: IoU with matched GT
-                obj_target[pred_idx] = giou.detach().float().clamp(0, 1)
-
-                obj_loss = F.binary_cross_entropy_with_logits(
-                    obj_pred,
-                    obj_target,
+                pos_target = giou.detach().float().clamp(0, 1)
+                pos_loss = F.binary_cross_entropy_with_logits(
+                    obj_pred[pred_idx],
+                    pos_target,
                     reduction="mean"
                 )
+                neg_mask = torch.ones(b_pred_obj.shape[0], dtype=torch.bool, device=device)
+                neg_mask[pred_idx] = False
+                neg_loss = F.binary_cross_entropy_with_logits(
+                    obj_pred[neg_mask],
+                    torch.zeros_like(obj_pred[neg_mask]),
+                    reduction="mean"
+                )
+                obj_loss = pos_loss + neg_loss
             total_obj_loss = total_obj_loss + obj_loss
 
             num_pos += n_matched
