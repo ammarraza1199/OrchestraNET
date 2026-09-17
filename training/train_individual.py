@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -80,12 +81,14 @@ def parse_args():
     parser.add_argument("--use-ema", action="store_true", default=True)
     parser.add_argument("--val-freq", type=int, default=1,
                         help="Frequency (in epochs) to run validation (default: 1)")
+    parser.add_argument("--val-images", type=int, default=0,
+                        help="Limit number of validation images (0 or unset = all validation images)")
+    parser.add_argument("--val-num-images", type=int, default=None,
+                        help="Alias for --val-images")
     parser.add_argument("--val-root", default=None,
                         help="Path to validation images directory (defaults to <data-root>/val2017)")
     parser.add_argument("--val-ann-file", default=None,
                         help="Path to validation annotations JSON (defaults to <data-root>/annotations/instances_val2017.json)")
-    parser.add_argument("--val-num-images", type=int, default=None,
-                        help="Limit number of validation images (default: None = full dataset)")
     return parser.parse_args()
 
 
@@ -133,7 +136,7 @@ class IndividualTrainer:
 
     def train_step(self, images, targets):
         """Single training step."""
-        images = images.to(self.device)
+        images = images.to(self.device, non_blocking=True)
 
         # Feature extraction
         backbone_features = self.backbone(images)
@@ -144,7 +147,7 @@ class IndividualTrainer:
 
         # Task loss
         targets_device = {
-            k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+            k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
             for k, v in targets.items()
         }
         losses = self.model.get_loss(predictions, targets_device)
@@ -180,9 +183,9 @@ def validate_m1(
     iou_thresh: float = 0.5,
     max_detections: int = 300,
     num_images: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """
-    Evaluate M1 on COCO val2017 using DetectionMetrics.
+    Evaluate M1 on COCO val2017 using DetectionMetrics with full diagnostics.
 
     Returns:
         dict containing:
@@ -191,6 +194,7 @@ def validate_m1(
           - AP_small
           - AP_medium
           - AP_large
+          - diagnostics (gt_count, raw_preds, after_conf, after_nms, score_stats, box_ranges)
     """
     trainer.backbone.eval()
     trainer.fpn.eval()
@@ -199,11 +203,23 @@ def validate_m1(
     metrics = DetectionMetrics(num_classes=80)
     count = 0
 
+    total_gt = 0
+    total_raw = 0
+    total_conf = 0
+    total_nms = 0
+
+    all_raw_scores = []
+    all_conf_scores = []
+    raw_box_min = [float("inf")] * 4
+    raw_box_max = [float("-inf")] * 4
+    kept_box_min = [float("inf")] * 4
+    kept_box_max = [float("-inf")] * 4
+
     for images, targets in val_loader:
         if num_images is not None and count >= num_images:
             break
 
-        images = images.to(device)
+        images = images.to(device, non_blocking=True)
         with torch.amp.autocast("cuda", enabled=(device == "cuda")):
             backbone_feats = trainer.backbone(images)
             fpn_feats = trainer.fpn(backbone_feats)
@@ -222,13 +238,29 @@ def validate_m1(
             max_cls, labels = cls_probs.max(dim=-1)
             scores = obj * max_cls
 
+            total_raw += boxes.shape[0]
+
+            # Collect raw score stats & raw box bounds
+            if scores.numel() > 0:
+                all_raw_scores.append(scores.detach().cpu())
+                b_min = boxes.min(dim=0)[0].tolist()
+                b_max = boxes.max(dim=0)[0].tolist()
+                for i_coord in range(4):
+                    raw_box_min[i_coord] = min(raw_box_min[i_coord], b_min[i_coord])
+                    raw_box_max[i_coord] = max(raw_box_max[i_coord], b_max[i_coord])
+
             mask = scores > conf_thresh
-            if mask.sum() == 0:
+            n_conf = int(mask.sum().item())
+            total_conf += n_conf
+
+            if n_conf == 0:
                 pred_boxes, pred_scores, pred_labels = [], [], []
             else:
                 f_boxes = boxes[mask]
                 f_scores = scores[mask]
                 f_labels = labels[mask]
+
+                all_conf_scores.append(f_scores.detach().cpu())
 
                 if f_boxes.shape[0] > 1000:
                     topk_idx = f_scores.topk(1000)[1]
@@ -240,6 +272,15 @@ def validate_m1(
                 if len(keep) > max_detections:
                     keep = keep[:max_detections]
 
+                total_nms += len(keep)
+
+                # Collect kept box range
+                k_min = f_boxes[keep].min(dim=0)[0].tolist()
+                k_max = f_boxes[keep].max(dim=0)[0].tolist()
+                for i_coord in range(4):
+                    kept_box_min[i_coord] = min(kept_box_min[i_coord], k_min[i_coord])
+                    kept_box_max[i_coord] = max(kept_box_max[i_coord], k_max[i_coord])
+
                 pred_boxes = f_boxes[keep].cpu().numpy()
                 pred_scores = f_scores[keep].cpu().numpy()
                 pred_labels = f_labels[keep].cpu().numpy()
@@ -250,6 +291,8 @@ def validate_m1(
             else:
                 valid_gt = (targets["boxes"][b][:, 2] - targets["boxes"][b][:, 0]) > 0
                 n_gt = int(valid_gt.sum().item())
+
+            total_gt += n_gt
 
             gt_boxes_t = targets["boxes"][b][:n_gt]
             gt_labels_t = targets["labels"][b][:n_gt]
@@ -268,7 +311,59 @@ def validate_m1(
 
         count += B
 
-    return metrics.compute()
+    # Compute diagnostics
+    if all_raw_scores:
+        cat_raw = torch.cat(all_raw_scores)
+        raw_min = float(cat_raw.min().item())
+        raw_mean = float(cat_raw.mean().item())
+        raw_max = float(cat_raw.max().item())
+    else:
+        raw_min = raw_mean = raw_max = 0.0
+
+    if all_conf_scores:
+        cat_conf = torch.cat(all_conf_scores)
+        conf_min = float(cat_conf.min().item())
+        conf_mean = float(cat_conf.mean().item())
+        conf_max = float(cat_conf.max().item())
+    else:
+        conf_min = conf_mean = conf_max = 0.0
+
+    raw_box_str = (
+        f"[{raw_box_min[0]:.1f}, {raw_box_min[1]:.1f}, {raw_box_min[2]:.1f}, {raw_box_max[3]:.1f}]"
+        if total_raw > 0 else "N/A"
+    )
+    kept_box_str = (
+        f"[{kept_box_min[0]:.1f}, {kept_box_min[1]:.1f}, {kept_box_min[2]:.1f}, {kept_box_max[3]:.1f}]"
+        if total_nms > 0 else "N/A (0 kept)"
+    )
+
+    print(f"\n  [M1 Validation Diagnostics - {count} images]")
+    print(f"     - Ground Truth Boxes:             {total_gt}")
+    print(f"     - Raw Predictions (Decoded):       {total_raw:,}")
+    print(f"     - Predictions After Conf (> {conf_thresh:.2f}): {total_conf:,}")
+    print(f"     - Predictions After NMS (Kept):    {total_nms:,}")
+    print(f"     - Raw Score Stats:                min={raw_min:.4f}, mean={raw_mean:.4f}, max={raw_max:.4f}")
+    if total_conf > 0:
+        print(f"     - Conf-Filtered Score Stats:      min={conf_min:.4f}, mean={conf_mean:.4f}, max={conf_max:.4f}")
+    print(f"     - Raw Box Coord Bounds:           {raw_box_str}")
+    print(f"     - Kept Box Coord Bounds:          {kept_box_str}\n")
+
+    results = metrics.compute()
+    results["diagnostics"] = {
+        "gt_count": total_gt,
+        "raw_preds": total_raw,
+        "after_conf": total_conf,
+        "after_nms": total_nms,
+        "raw_score_min": raw_min,
+        "raw_score_mean": raw_mean,
+        "raw_score_max": raw_max,
+        "conf_score_min": conf_min,
+        "conf_score_mean": conf_mean,
+        "conf_score_max": conf_max,
+        "raw_box_bounds": [raw_box_min, raw_box_max] if total_raw > 0 else None,
+        "kept_box_bounds": [kept_box_min, kept_box_max] if total_nms > 0 else None,
+    }
+    return results
 
 
 def main():
@@ -315,13 +410,27 @@ def main():
         transforms=train_transforms,
         occlusion_aug=occ_aug,
     )
-    loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=True, drop_last=True,
-    )
+    train_loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": True,
+        "num_workers": args.num_workers,
+        "pin_memory": True,
+        "drop_last": True,
+    }
+    if args.num_workers > 0:
+        train_loader_kwargs["persistent_workers"] = True
+        train_loader_kwargs["prefetch_factor"] = 2
+
+    loader = DataLoader(dataset, **train_loader_kwargs)
 
     # Validation DataLoader for M1
     val_loader = None
+    val_images_limit = None
+    if getattr(args, "val_images", 0) and args.val_images > 0:
+        val_images_limit = args.val_images
+    elif getattr(args, "val_num_images", None) and args.val_num_images > 0:
+        val_images_limit = args.val_num_images
+
     if args.model == "m1":
         val_root = args.val_root if args.val_root else os.path.join(args.data_root, "val2017")
         val_ann = args.val_ann_file if args.val_ann_file else os.path.join(args.data_root, "annotations/instances_val2017.json")
@@ -333,14 +442,20 @@ def main():
                 ann_file=val_ann,
                 transforms=val_transforms,
             )
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=1,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-            )
+            val_loader_kwargs = {
+                "batch_size": 1,
+                "shuffle": False,
+                "num_workers": args.num_workers,
+                "pin_memory": True,
+            }
+            if args.num_workers > 0:
+                val_loader_kwargs["persistent_workers"] = True
+                val_loader_kwargs["prefetch_factor"] = 2
+
+            val_loader = DataLoader(val_dataset, **val_loader_kwargs)
             logger.info(f"   Validation: {len(val_dataset)} images from {val_root}")
+            if val_images_limit:
+                logger.info(f"   Validation image cap: {val_images_limit}")
         else:
             logger.warning(
                 f"⚠️  Validation dataset not found ({val_root} or {val_ann}). "
@@ -429,9 +544,15 @@ def main():
             scaler.scale(losses["total_loss"]).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(trainable_params, 10.0)
+
+            # Ensure optimizer.step() occurs before scheduler.step()
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
+            scale_after = scaler.get_scale()
+            # Only advance scheduler if optimizer was actually stepped (not skipped by scaler)
+            if not (args.device == "cuda" and scale_after < scale_before):
+                scheduler.step()
 
             # Update EMA
             if ema:
@@ -474,12 +595,13 @@ def main():
                 trainer,
                 val_loader,
                 device=args.device,
-                num_images=args.val_num_images,
+                num_images=val_images_limit,
             )
 
             if ema:
                 ema.restore(trainer.model)
 
+            diag = val_metrics.get("diagnostics", {})
             logger.info(
                 f"  📊 Val M1 | "
                 f"mAP@50: {val_metrics['mAP@50']:.4f} | "
@@ -488,8 +610,17 @@ def main():
                 f"AP_m: {val_metrics['AP_medium']:.4f} | "
                 f"AP_l: {val_metrics['AP_large']:.4f}"
             )
+            if diag:
+                logger.info(
+                    f"  🔬 Diagnostics: GT={diag.get('gt_count', 0)} | "
+                    f"RawPreds={diag.get('raw_preds', 0):,} | "
+                    f"AfterConf={diag.get('after_conf', 0):,} | "
+                    f"AfterNMS={diag.get('after_nms', 0):,} | "
+                    f"Score[min={diag.get('raw_score_min', 0.0):.4f}, mean={diag.get('raw_score_mean', 0.0):.4f}, max={diag.get('raw_score_max', 0.0):.4f}]"
+                )
             for m_k, m_v in val_metrics.items():
-                logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+                if isinstance(m_v, (int, float)):
+                    logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
 
             current_map50 = val_metrics["mAP@50"]
             if current_map50 > best_map50:
