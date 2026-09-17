@@ -12,6 +12,7 @@ Design Decisions:
 - Depthwise-separable convolutions keep the parameter count low (~3.5M).
 """
 
+import math
 import torch
 import torch.nn as nn
 
@@ -44,35 +45,42 @@ class MobileNetV4Backbone(nn.Module):
         "efficientnetv2_s": [48, 64, 160, 256],
     }
 
+    DEFAULT_OUT_INDICES_TIMM = (2, 3, 4)
+    DEFAULT_OUT_INDICES_FALLBACK = (1, 2, 3)
+
     def __init__(
         self,
         model_name: str = "mobilenetv4_hybrid_medium",
         pretrained: bool = True,
-        out_indices: tuple = (1, 2, 3),
+        out_indices: tuple | None = None,
         frozen_stages: int = 0,
     ):
         super().__init__()
         self.model_name = model_name
-        self.out_indices = out_indices
 
         if timm is not None:
-            # Use timm for production-quality backbones
+            actual_indices = out_indices if out_indices is not None else self.DEFAULT_OUT_INDICES_TIMM
+            self.out_indices = actual_indices
             self.backbone = timm.create_model(
                 model_name,
                 pretrained=pretrained,
                 features_only=True,
-                out_indices=out_indices,
+                out_indices=actual_indices,
             )
             # Get actual channel dimensions from timm
             self.out_channels = self.backbone.feature_info.channels()
         else:
-            # Fallback: build a lightweight custom backbone for dev/testing
+            actual_indices = out_indices if out_indices is not None else self.DEFAULT_OUT_INDICES_FALLBACK
+            # If (2, 3, 4) was passed to fallback, map to (1, 2, 3) since fallback stages are 0-indexed after stem
+            if actual_indices == (2, 3, 4):
+                actual_indices = (1, 2, 3)
+            self.out_indices = actual_indices
             self.backbone = None
             channels = self.KNOWN_CHANNELS.get(
                 model_name, [48, 80, 160, 256]
             )
-            self.out_channels = [channels[i] for i in out_indices]
-            self._build_fallback_backbone(channels, out_indices)
+            self.out_channels = [channels[i] for i in actual_indices]
+            self._build_fallback_backbone(channels, actual_indices)
 
         # Freeze early stages if requested
         if frozen_stages > 0:
@@ -181,11 +189,12 @@ class MobileNetV4Backbone(nn.Module):
         features = self.forward(dummy)
         shapes = {}
         for i, feat in enumerate(features):
-            level = f"P{self.out_indices[i] + 2}"
+            stride = input_size // feat.shape[2]
+            level = f"P{int(math.log2(stride))}"
             shapes[level] = {
                 "shape": tuple(feat.shape),
                 "channels": feat.shape[1],
                 "spatial": (feat.shape[2], feat.shape[3]),
-                "stride": input_size // feat.shape[2],
+                "stride": stride,
             }
         return shapes

@@ -118,7 +118,7 @@ class IndividualTrainer:
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
-            print("   🔒 Backbone frozen")
+            print("   Backbone frozen")
 
         # Collect all trainable parameters
         self.all_params = (
@@ -484,22 +484,28 @@ def main():
             "because cosine annealing requires at least one epoch."
         )
 
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=0.01,
-        total_iters=max(1, warmup_steps),
-    )
+    if warmup_steps > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.01,
+            total_iters=warmup_steps,
+        )
 
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=max(1, cosine_steps),
-    )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, cosine_steps),
+        )
 
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_steps],
-    )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_steps],
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, cosine_steps),
+        )
 
     # Mixed precision
     scaler = torch.amp.GradScaler("cuda", enabled=(args.device == "cuda"))
