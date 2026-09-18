@@ -12,6 +12,31 @@ import torch.nn.functional as F
 from .base_model import BaseMicroModel
 
 
+def _validate_probability_tensor(tensor: torch.Tensor, name: str) -> torch.Tensor:
+    """
+    Validate that a probability tensor is finite and strictly in [0, 1].
+    Raises RuntimeError with descriptive diagnostics if invalid (no silent clamp).
+    """
+    t = tensor.float()
+    if not torch.isfinite(t).all():
+        nan_count = int(torch.isnan(t).sum().item())
+        inf_count = int(torch.isinf(t).sum().item())
+        raise RuntimeError(
+            f"M6 BCE {name} contains non-finite values (NaN/Inf): "
+            f"nan_count={nan_count}, inf_count={inf_count}, "
+            f"shape={list(t.shape)}, dtype={tensor.dtype}"
+        )
+    t_min = float(t.min().item()) if t.numel() > 0 else 0.0
+    t_max = float(t.max().item()) if t.numel() > 0 else 0.0
+    if t_min < 0.0 or t_max > 1.0:
+        raise RuntimeError(
+            f"M6 BCE {name} outside [0, 1]: "
+            f"min={t_min:.6f}, max={t_max:.6f}, "
+            f"shape={list(t.shape)}, dtype={tensor.dtype}"
+        )
+    return t
+
+
 class M6AmodalCompleter(BaseMicroModel):
     """
     M6: Amodal Shape Completer (~900K params).
@@ -97,6 +122,10 @@ class M6AmodalCompleter(BaseMicroModel):
           1. Bbox offset L1 loss (amodal vs visible bbox delta)
           2. Mask BCE loss (predicted amodal mask vs GT)
           3. Completion confidence BCE (should be high for truly occluded objects)
+
+        When 'num_objects' is provided, loss is computed strictly over valid
+        objects (i < num_objects), excluding padded slots from both loss
+        and BCE numerical checks.
         """
         device = predictions["amodal_bbox_offset"].device
 
@@ -104,15 +133,30 @@ class M6AmodalCompleter(BaseMicroModel):
         mask_loss = torch.tensor(0.0, device=device)
         conf_loss = torch.tensor(0.0, device=device)
 
+        # Build valid object mask if num_objects is available
+        valid_mask = None
+        if "num_objects" in targets:
+            num_objs = targets["num_objects"]
+            B = predictions["amodal_bbox_offset"].shape[0]
+            S = predictions["amodal_bbox_offset"].shape[1]
+            valid_mask = torch.zeros((B, S), dtype=torch.bool, device=device)
+            for b in range(B):
+                n_obj = num_objs[b].item() if isinstance(num_objs[b], torch.Tensor) else int(num_objs[b])
+                valid_mask[b, :min(max(0, n_obj), S)] = True
+
         if "amodal_boxes" in targets:
             n_gt = min(
                 predictions["amodal_bbox_offset"].shape[1],
                 targets["amodal_boxes"].shape[1],
             )
-            bbox_loss = F.l1_loss(
-                predictions["amodal_bbox_offset"][:, :n_gt],
-                targets["amodal_boxes"][:, :n_gt],
-            )
+            pred_boxes = predictions["amodal_bbox_offset"][:, :n_gt]
+            gt_boxes = targets["amodal_boxes"][:, :n_gt]
+            if valid_mask is not None:
+                vm = valid_mask[:, :n_gt]
+                if vm.any():
+                    bbox_loss = F.l1_loss(pred_boxes[vm], gt_boxes[vm])
+            else:
+                bbox_loss = F.l1_loss(pred_boxes, gt_boxes)
 
         if "amodal_masks" in targets:
             n_gt = min(
@@ -127,11 +171,19 @@ class M6AmodalCompleter(BaseMicroModel):
                     gt_masks.flatten(0, 1).unsqueeze(1),
                     size=pred_masks.shape[-2:], mode="nearest"
                 ).squeeze(1).unflatten(0, (pred_masks.shape[0], n_gt))
-            with torch.amp.autocast("cuda", enabled=False):
-                mask_loss = F.binary_cross_entropy(
-                    pred_masks.float(),
-                    gt_masks.float()
-                )
+
+            if valid_mask is not None:
+                vm = valid_mask[:, :n_gt]
+                if vm.any():
+                    p_valid = _validate_probability_tensor(pred_masks[vm], "amodal mask prediction")
+                    g_valid = _validate_probability_tensor(gt_masks[vm], "amodal mask target")
+                    with torch.amp.autocast("cuda", enabled=False):
+                        mask_loss = F.binary_cross_entropy(p_valid, g_valid)
+            else:
+                p_valid = _validate_probability_tensor(pred_masks, "amodal mask prediction")
+                g_valid = _validate_probability_tensor(gt_masks, "amodal mask target")
+                with torch.amp.autocast("cuda", enabled=False):
+                    mask_loss = F.binary_cross_entropy(p_valid, g_valid)
 
         if "is_occluded" in targets:
             # Confidence should be high for occluded objects
@@ -139,11 +191,21 @@ class M6AmodalCompleter(BaseMicroModel):
                 predictions["completion_confidence"].shape[1],
                 targets["is_occluded"].shape[1],
             )
-            with torch.amp.autocast("cuda", enabled=False):
-                conf_loss = F.binary_cross_entropy(
-                    predictions["completion_confidence"][:, :n_gt].float(),
-                    targets["is_occluded"][:, :n_gt].unsqueeze(-1).float(),
-                )
+            pred_conf = predictions["completion_confidence"][:, :n_gt]
+            gt_occ = targets["is_occluded"][:, :n_gt].unsqueeze(-1)
+
+            if valid_mask is not None:
+                vm = valid_mask[:, :n_gt]
+                if vm.any():
+                    p_conf_valid = _validate_probability_tensor(pred_conf[vm], "completion confidence prediction")
+                    g_occ_valid = _validate_probability_tensor(gt_occ[vm], "occlusion target")
+                    with torch.amp.autocast("cuda", enabled=False):
+                        conf_loss = F.binary_cross_entropy(p_conf_valid, g_occ_valid)
+            else:
+                p_conf_valid = _validate_probability_tensor(pred_conf, "completion confidence prediction")
+                g_occ_valid = _validate_probability_tensor(gt_occ, "occlusion target")
+                with torch.amp.autocast("cuda", enabled=False):
+                    conf_loss = F.binary_cross_entropy(p_conf_valid, g_occ_valid)
 
         total = bbox_loss + mask_loss + 0.5 * conf_loss
 

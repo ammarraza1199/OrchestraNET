@@ -458,7 +458,78 @@ def validate_m6(
             backbone_features = trainer.backbone(images)
             fpn_features = trainer.fpn(backbone_features)
             predictions = trainer.model(fpn_features)
-            losses = trainer.model.get_loss(predictions, targets_device)
+
+        losses = trainer.model.get_loss(predictions, targets_device)
+
+        # Print compact runtime diagnostic on the first validation batch
+        if count == 0:
+            p_mask = predictions["amodal_masks"]
+            p_conf = predictions["completion_confidence"]
+            g_mask = targets.get("amodal_masks")
+            g_occ = targets.get("is_occluded")
+            g_bbox = targets.get("amodal_boxes")
+            n_objs = targets.get("num_objects")
+
+            print("\n" + "=" * 60)
+            print("  [M6 RUNTIME EVALUATION DIAGNOSTIC - BATCH 0]")
+            print("=" * 60)
+            print("M6 MASK PRED:")
+            print(f"  shape:    {list(p_mask.shape)}")
+            print(f"  dtype:    {p_mask.dtype}")
+            print(f"  min:      {p_mask.min().item():.6f}")
+            print(f"  max:      {p_mask.max().item():.6f}")
+            print(f"  mean:     {p_mask.mean().item():.6f}")
+            print(f"  finite:   {bool(torch.isfinite(p_mask).all().item())}")
+            print(f"  in_range: {bool((p_mask >= 0.0).all().item() and (p_mask <= 1.0).all().item())}")
+
+            print("\nM6 CONF PRED:")
+            print(f"  shape:    {list(p_conf.shape)}")
+            print(f"  dtype:    {p_conf.dtype}")
+            print(f"  min:      {p_conf.min().item():.6f}")
+            print(f"  max:      {p_conf.max().item():.6f}")
+            print(f"  mean:     {p_conf.mean().item():.6f}")
+            print(f"  finite:   {bool(torch.isfinite(p_conf).all().item())}")
+            print(f"  in_range: {bool((p_conf >= 0.0).all().item() and (p_conf <= 1.0).all().item())}")
+
+            if g_mask is not None:
+                gm = g_mask.float()
+                print("\nKINS MASK GT:")
+                print(f"  shape:    {list(g_mask.shape)}")
+                print(f"  dtype:    {g_mask.dtype}")
+                print(f"  min:      {gm.min().item():.6f}")
+                print(f"  max:      {gm.max().item():.6f}")
+                print(f"  mean:     {gm.mean().item():.6f}")
+                print(f"  finite:   {bool(torch.isfinite(gm).all().item())}")
+                print(f"  in_range: {bool((gm >= 0.0).all().item() and (gm <= 1.0).all().item())}")
+
+            if g_occ is not None:
+                go = g_occ.float()
+                print("\nKINS OCC GT:")
+                print(f"  shape:    {list(g_occ.shape)}")
+                print(f"  dtype:    {g_occ.dtype}")
+                print(f"  min:      {go.min().item():.6f}")
+                print(f"  max:      {go.max().item():.6f}")
+                print(f"  mean:     {go.mean().item():.6f}")
+                print(f"  finite:   {bool(torch.isfinite(go).all().item())}")
+                print(f"  in_range: {bool((go >= 0.0).all().item() and (go <= 1.0).all().item())}")
+
+            if g_bbox is not None:
+                gb = g_bbox.float()
+                print("\nKINS BBOX GT:")
+                print(f"  shape:    {list(g_bbox.shape)}")
+                print(f"  dtype:    {g_bbox.dtype}")
+                print(f"  min:      {gb.min().item():.6f}")
+                print(f"  max:      {gb.max().item():.6f}")
+                print(f"  finite:   {bool(torch.isfinite(gb).all().item())}")
+
+            if n_objs is not None:
+                n_objs_f = n_objs.float()
+                n_valid = int(n_objs.clamp(max=50).sum().item())
+                n_padded = int((50 - n_objs.clamp(max=50)).clamp(min=0).sum().item())
+                print(f"\nnum_objects: min={int(n_objs.min().item())}, max={int(n_objs.max().item())}, mean={n_objs_f.mean().item():.2f}")
+                print(f"valid objects evaluated: {n_valid}")
+                print(f"padded objects ignored:  {n_padded}")
+            print("=" * 60 + "\n")
 
         total_loss_sum += losses["total_loss"].item() * B
         for k, v in losses.items():

@@ -367,6 +367,124 @@ class TestTrainingSmoke:
         dataset_name = "KINS" if is_kins else MODEL_REGISTRY["m6"]["dataset"]
         assert dataset_name == "KINS"
 
+    def test_m6_metric_ignores_padded_slots(self):
+        """Test F: compute_amodal_metrics strictly ignores padded slots beyond num_objects."""
+        from orchestranet.utils.metrics import compute_amodal_metrics
+
+        # 1 valid object, 49 padded slots
+        preds_clean = {
+            "amodal_masks": torch.ones((1, 50, 28, 28)),
+            "amodal_bbox_offset": torch.zeros((1, 50, 4)),
+        }
+        targets = {
+            "amodal_masks": torch.ones((1, 50, 28, 28)),
+            "amodal_boxes": torch.zeros((1, 50, 4)),
+            "num_objects": torch.tensor([1]),
+        }
+        res_clean = compute_amodal_metrics(preds_clean, targets)
+        assert abs(res_clean["amodal_mask_iou"] - 1.0) < 1e-4
+        assert abs(res_clean["amodal_bbox_mae"] - 0.0) < 1e-4
+
+        # Mess up padded slot 35 with zeros and huge offsets
+        preds_corrupted_padding = {
+            "amodal_masks": torch.ones((1, 50, 28, 28)),
+            "amodal_bbox_offset": torch.zeros((1, 50, 4)),
+        }
+        preds_corrupted_padding["amodal_masks"][:, 35] = 0.0
+        preds_corrupted_padding["amodal_bbox_offset"][:, 35] = 9999.0
+
+        res_corrupted = compute_amodal_metrics(preds_corrupted_padding, targets)
+        # Should be identical because slot 35 is ignored
+        assert abs(res_corrupted["amodal_mask_iou"] - 1.0) < 1e-4
+        assert abs(res_corrupted["amodal_bbox_mae"] - 0.0) < 1e-4
+
+    def test_m6_metric_handles_zero_object_cases(self):
+        """Test G: compute_amodal_metrics handles images with 0 valid objects gracefully."""
+        from orchestranet.utils.metrics import compute_amodal_metrics
+
+        preds = {
+            "amodal_masks": torch.rand((1, 50, 28, 28)),
+            "amodal_bbox_offset": torch.rand((1, 50, 4)),
+        }
+        targets = {
+            "amodal_masks": torch.zeros((1, 50, 28, 28)),
+            "amodal_boxes": torch.zeros((1, 50, 4)),
+            "num_objects": torch.tensor([0]),
+        }
+        res = compute_amodal_metrics(preds, targets)
+        assert res["amodal_mask_iou"] == 0.0
+        assert res["amodal_bbox_mae"] == 0.0
+        assert len(res["ious"]) == 0
+        assert len(res["maes"]) == 0
+
+    def test_bbox_mae_uses_only_valid_objects(self):
+        """Test H: Bbox MAE computes mean over exactly valid objects and compares coordinates consistently."""
+        from orchestranet.utils.metrics import compute_amodal_metrics
+
+        # 2 valid objects with known deltas [1.0, 2.0, 3.0, 4.0] (mean 2.5) and [0, 0, 0, 0] (mean 0.0)
+        # Average MAE should be (2.5 + 0.0) / 2 = 1.25
+        preds = {
+            "amodal_masks": torch.ones((1, 50, 28, 28)),
+            "amodal_bbox_offset": torch.zeros((1, 50, 4)),
+        }
+        preds["amodal_bbox_offset"][0, 0] = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        targets = {
+            "amodal_masks": torch.ones((1, 50, 28, 28)),
+            "amodal_boxes": torch.zeros((1, 50, 4)),
+            "num_objects": torch.tensor([2]),
+        }
+        res = compute_amodal_metrics(preds, targets)
+        assert abs(res["amodal_bbox_mae"] - 1.25) < 1e-4
+
+    def test_validate_m6_returns_expected_metric_keys(self, device):
+        """Test I: validate_m6 returns all required metric keys."""
+        from training.train_individual import IndividualTrainer, validate_m6
+
+        trainer = IndividualTrainer("m6", device=device)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 100, 4), device=device),
+            "labels": torch.zeros((2, 100), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([2, 1], device=device),
+            "amodal_boxes": torch.zeros((2, 50, 4), device=device),
+            "amodal_masks": torch.zeros((2, 50, 28, 28), device=device),
+            "is_occluded": torch.zeros((2, 50), device=device),
+            "occlusion_mask": torch.zeros((2, 1, 640, 640), device=device),
+        }
+        val_loader = [(images, targets)]
+        res = validate_m6(trainer, val_loader, device=device, num_images=2)
+
+        expected_keys = [
+            "val_loss",
+            "val_amodal_mask_iou",
+            "val_amodal_bbox_mae",
+            "val_amodal_bbox_loss",
+            "val_amodal_mask_loss",
+            "val_amodal_conf_loss",
+        ]
+        for key in expected_keys:
+            assert key in res, f"Expected key '{key}' missing from validate_m6 output"
+            assert isinstance(res[key], float)
+
+    def test_eval_only_checkpoint_loading_no_optimizer(self, device, tmp_path):
+        """Test J: eval-only checkpoint loading does not require optimizer_state_dict."""
+        from training.train_individual import IndividualTrainer
+
+        trainer = IndividualTrainer("m6", device=device)
+        ckpt_path = tmp_path / "test_eval_ckpt.pt"
+        # Checkpoint without optimizer_state_dict
+        torch.save({
+            "model_state_dict": trainer.model.state_dict(),
+            "backbone_state_dict": trainer.backbone.state_dict(),
+            "fpn_state_dict": trainer.fpn.state_dict(),
+        }, ckpt_path)
+
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        trainer.model.load_state_dict(ckpt["model_state_dict"])
+        trainer.backbone.load_state_dict(ckpt["backbone_state_dict"])
+        trainer.fpn.load_state_dict(ckpt["fpn_state_dict"])
+        assert "optimizer_state_dict" not in ckpt
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

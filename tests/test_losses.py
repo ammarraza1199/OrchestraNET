@@ -227,6 +227,136 @@ class TestM6Loss:
         assert "amodal_mask_loss" in losses
         assert losses["amodal_mask_loss"].item() >= 0
 
+    def test_valid_mask_probabilities(self, fpn_features, device):
+        """Test A: Valid M6 mask probabilities in [0, 1] compute loss without error."""
+        m6 = M6AmodalCompleter(d_model=128, mask_resolution=28).to(device)
+        predictions = m6(fpn_features)
+        targets = {
+            "amodal_masks": (torch.rand(2, 50, 28, 28, device=device) > 0.5).float(),
+            "num_objects": torch.tensor([5, 10], device=device),
+        }
+        losses = m6.get_loss(predictions, targets)
+        assert "amodal_mask_loss" in losses
+        assert losses["amodal_mask_loss"].item() >= 0
+        assert torch.isfinite(losses["amodal_mask_loss"])
+
+    def test_invalid_mask_probabilities_detected(self, fpn_features, device):
+        """Test B: Invalid M6 mask probabilities (NaN/Inf/<0/>1) are detected and raise RuntimeError."""
+        m6 = M6AmodalCompleter(d_model=128, mask_resolution=28).to(device)
+        predictions = m6(fpn_features)
+        targets = {
+            "amodal_masks": torch.zeros(2, 50, 28, 28, device=device),
+            "num_objects": torch.tensor([5, 5], device=device),
+        }
+
+        # Case 1: NaN in prediction
+        bad_preds_nan = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        bad_preds_nan["amodal_masks"][0, 0, 0, 0] = float("nan")
+        with pytest.raises(RuntimeError, match="M6 BCE amodal mask prediction contains non-finite values"):
+            m6.get_loss(bad_preds_nan, targets)
+
+        # Case 2: Value > 1.0 in prediction
+        bad_preds_high = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        bad_preds_high["amodal_masks"][0, 0, 0, 0] = 1.05
+        with pytest.raises(RuntimeError, match="outside \\[0, 1\\]"):
+            m6.get_loss(bad_preds_high, targets)
+
+        # Case 3: Value < 0.0 in prediction
+        bad_preds_low = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        bad_preds_low["amodal_masks"][0, 0, 0, 0] = -0.05
+        with pytest.raises(RuntimeError, match="outside \\[0, 1\\]"):
+            m6.get_loss(bad_preds_low, targets)
+
+    def test_valid_confidence_probabilities(self, fpn_features, device):
+        """Test C: Valid completion confidence probabilities in [0, 1] compute loss without error."""
+        m6 = M6AmodalCompleter(d_model=128).to(device)
+        predictions = m6(fpn_features)
+        targets = {
+            "is_occluded": torch.tensor([[1.0, 0.0] + [0.0]*48, [0.0, 1.0] + [0.0]*48], device=device),
+            "num_objects": torch.tensor([2, 2], device=device),
+        }
+        losses = m6.get_loss(predictions, targets)
+        assert "amodal_conf_loss" in losses
+        assert losses["amodal_conf_loss"].item() >= 0
+        assert torch.isfinite(losses["amodal_conf_loss"])
+
+    def test_invalid_confidence_probabilities_detected(self, fpn_features, device):
+        """Test D: Invalid completion confidence is detected and raises descriptive RuntimeError."""
+        m6 = M6AmodalCompleter(d_model=128).to(device)
+        predictions = m6(fpn_features)
+        targets = {
+            "is_occluded": torch.zeros(2, 50, device=device),
+            "num_objects": torch.tensor([2, 2], device=device),
+        }
+
+        # Case 1: NaN in confidence prediction
+        bad_conf_nan = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        bad_conf_nan["completion_confidence"][0, 0, 0] = float("nan")
+        with pytest.raises(RuntimeError, match="M6 BCE completion confidence prediction contains non-finite values"):
+            m6.get_loss(bad_conf_nan, targets)
+
+        # Case 2: Value > 1.0 in confidence prediction
+        bad_conf_high = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        bad_conf_high["completion_confidence"][0, 0, 0] = 1.10
+        with pytest.raises(RuntimeError, match="outside \\[0, 1\\]"):
+            m6.get_loss(bad_conf_high, targets)
+
+    def test_kins_occlusion_and_mask_targets_validation(self, fpn_features, device):
+        """Test E: Non-finite or out-of-range targets raise descriptive RuntimeError."""
+        m6 = M6AmodalCompleter(d_model=128).to(device)
+        predictions = m6(fpn_features)
+
+        # Non-binary mask target (> 1.0)
+        bad_mask_targets = {
+            "amodal_masks": torch.zeros(2, 50, 28, 28, device=device),
+            "num_objects": torch.tensor([1, 1], device=device),
+        }
+        bad_mask_targets["amodal_masks"][0, 0, 0, 0] = 2.0
+        with pytest.raises(RuntimeError, match="outside \\[0, 1\\]"):
+            m6.get_loss(predictions, bad_mask_targets)
+
+        # Non-binary occlusion target (< 0.0)
+        bad_occ_targets = {
+            "is_occluded": torch.zeros(2, 50, device=device),
+            "num_objects": torch.tensor([1, 1], device=device),
+        }
+        bad_occ_targets["is_occluded"][0, 0] = -1.0
+        with pytest.raises(RuntimeError, match="outside \\[0, 1\\]"):
+            m6.get_loss(predictions, bad_occ_targets)
+
+    def test_padding_exclusion_and_zero_objects(self, fpn_features, device):
+        """Test that padded slots are excluded from loss and zero-object batches return zero loss."""
+        m6 = M6AmodalCompleter(d_model=128).to(device)
+        predictions = m6(fpn_features)
+
+        # When num_objects=0, loss should be 0.0
+        zero_targets = {
+            "amodal_boxes": torch.zeros(2, 50, 4, device=device),
+            "amodal_masks": torch.zeros(2, 50, 28, 28, device=device),
+            "is_occluded": torch.zeros(2, 50, device=device),
+            "num_objects": torch.tensor([0, 0], device=device),
+        }
+        losses_zero = m6.get_loss(predictions, zero_targets)
+        assert losses_zero["total_loss"].item() == 0.0
+
+        # Padded slots should not affect the loss
+        targets_k1 = {
+            "amodal_boxes": torch.zeros(2, 50, 4, device=device),
+            "amodal_masks": torch.zeros(2, 50, 28, 28, device=device),
+            "is_occluded": torch.zeros(2, 50, device=device),
+            "num_objects": torch.tensor([1, 1], device=device),
+        }
+        l1 = m6.get_loss(predictions, targets_k1)
+
+        # Mutate padded slot 40
+        pred_mut = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in predictions.items()}
+        pred_mut["amodal_masks"][:, 40] = 0.99
+        pred_mut["amodal_bbox_offset"][:, 40] = 999.0
+        pred_mut["completion_confidence"][:, 40] = 0.99
+        l2 = m6.get_loss(pred_mut, targets_k1)
+
+        assert abs(l1["total_loss"].item() - l2["total_loss"].item()) < 1e-5
+
 
 # ============ Self-Supervised Loss ============
 

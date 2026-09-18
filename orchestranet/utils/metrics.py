@@ -99,7 +99,7 @@ def compute_amodal_metrics(
     for b in range(B):
         if num_objs is not None:
             n_raw = num_objs[b].item() if isinstance(num_objs[b], torch.Tensor) else num_objs[b]
-            n_b = min(int(n_raw), pred_masks.shape[1], gt_masks.shape[1])
+            n_b = min(max(0, int(n_raw)), pred_masks.shape[1], gt_masks.shape[1])
         else:
             n_b = min(pred_masks.shape[1], gt_masks.shape[1])
 
