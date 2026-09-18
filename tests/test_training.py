@@ -276,6 +276,56 @@ class TestTrainingSmoke:
         assert losses["total_loss"].item() > 0
         losses["total_loss"].backward()
 
+    def test_m6_individual_trainer_step(self, device):
+        """Test M6 individual training and amodal completion loss."""
+        from training.train_individual import IndividualTrainer, validate_loss
+        from orchestranet.models import M6AmodalCompleter
+
+        trainer = IndividualTrainer(model_id="m6", device=device, freeze_backbone=True)
+        assert isinstance(trainer.model, M6AmodalCompleter)
+        assert trainer.model.d_model == 128
+
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 10, 4), device=device),
+            "labels": torch.zeros((2, 10), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([2, 2], device=device),
+            "amodal_boxes": torch.rand(2, 10, 4, device=device),
+            "amodal_masks": torch.rand(2, 10, 28, 28, device=device),
+            "is_occluded": torch.randint(0, 2, (2, 10), device=device),
+        }
+        losses = trainer.train_step(images, targets)
+        assert "total_loss" in losses
+        assert "amodal_bbox_loss" in losses
+        assert "amodal_mask_loss" in losses
+        assert "amodal_conf_loss" in losses
+        assert losses["total_loss"].item() > 0
+        losses["total_loss"].backward()
+
+        # Check gradients exist on M6 model parameters
+        m6_grads = sum(1 for p in trainer.model.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+        assert m6_grads > 0, "Gradients should be computed for M6 parameters"
+
+        val_loader = [(images, targets)]
+        val_res = validate_loss(trainer, val_loader, device=device)
+        assert "val_loss" in val_res
+        assert val_res["val_loss"] > 0
+        assert "val_amodal_bbox_loss" in val_res
+        assert "val_amodal_mask_loss" in val_res
+        assert "val_amodal_conf_loss" in val_res
+
+    def test_m6_kins_dataset_selection(self):
+        """Verify KINS dataset selection and display label for M6."""
+        from training.train_individual import MODEL_REGISTRY
+
+        assert MODEL_REGISTRY["m6"]["dataset"] == "KINS"
+
+        data_root = "/content/data/KINS"
+        is_kins = "kins" in data_root.lower()
+        assert is_kins is True
+        dataset_name = "KINS" if is_kins else MODEL_REGISTRY["m6"]["dataset"]
+        assert dataset_name == "KINS"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

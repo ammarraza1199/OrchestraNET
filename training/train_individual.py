@@ -57,7 +57,7 @@ MODEL_REGISTRY = {
     "m3": {"cls": M3SmallObjectEnhancer, "task": "Small Object Enhancement", "dataset": "VisDrone"},
     "m4": {"cls": M4DepthEstimator, "task": "Depth Estimation", "dataset": "NYU Depth V2"},
     "m5": {"cls": M5SemanticContext, "task": "Scene Classification", "dataset": "Places365"},
-    "m6": {"cls": M6AmodalCompleter, "task": "Amodal Completion", "dataset": "COCOA"},
+    "m6": {"cls": M6AmodalCompleter, "task": "Amodal Completion", "dataset": "KINS"},
 }
 
 
@@ -114,7 +114,10 @@ class IndividualTrainer:
         ).to(device)
 
         # Target micro-model
-        self.model = info["cls"](in_channels=fpn_channels).to(device)
+        if model_id == "m6":
+            self.model = info["cls"](d_model=fpn_channels).to(device)
+        else:
+            self.model = info["cls"](in_channels=fpn_channels).to(device)
 
         if freeze_backbone:
             for p in self.backbone.parameters():
@@ -426,11 +429,19 @@ def main():
     log_dir = os.path.join(args.log_dir, args.model)
     logger = TrainingLogger(log_dir=log_dir, tb_enabled=True)
 
+    is_kins = "kins" in args.data_root.lower()
+    dataset_name = "KINS" if is_kins else info["dataset"]
+
     logger.info("🎼 OrchestraNet — Individual Model Training")
     logger.info("=" * 60)
     logger.info(f"   Model:   {args.model} ({info['task']})")
-    logger.info(f"   Dataset: {info['dataset']}")
+    logger.info(f"   Dataset: {dataset_name}")
     logger.info(f"   Device:  {args.device}")
+    if args.model == "m6" and not is_kins:
+        logger.warning(
+            "⚠️  M6 requires amodal ground truth (e.g. KINS). "
+            "Dataset does not appear to be KINS, so amodal loss may evaluate to zero."
+        )
 
     # Build trainer
     trainer = IndividualTrainer(
@@ -447,9 +458,22 @@ def main():
     # Dataset
     occ_aug = SyntheticOcclusionGenerator() if args.model == "m2" else None
     train_transforms = get_train_transforms(img_size=640)
-    is_kins = "kins" in args.data_root.lower()
-    root_path = os.path.join(args.data_root, "training/image_2" if is_kins else "train2017")
-    ann_path = os.path.join(args.data_root, "update_train_2020.json" if is_kins else "annotations/instances_train2017.json")
+    if is_kins:
+        train_ann_candidates = [
+            os.path.join(args.data_root, "update_train_2020.json"),
+            os.path.join(args.data_root, "annotations", "update_train_2020.json"),
+            os.path.join(args.data_root, "instances_train.json"),
+        ]
+        ann_path = next((p for p in train_ann_candidates if os.path.exists(p)), train_ann_candidates[0])
+        train_root_candidates = [
+            os.path.join(args.data_root, "training/image_2"),
+            os.path.join(args.data_root, "image_2"),
+            args.data_root,
+        ]
+        root_path = next((p for p in train_root_candidates if os.path.exists(p)), train_root_candidates[0])
+    else:
+        root_path = os.path.join(args.data_root, "train2017")
+        ann_path = os.path.join(args.data_root, "annotations/instances_train2017.json")
 
     if is_kins:
         from orchestranet.data.kins_dataset import KINSAmodalDataset
@@ -486,8 +510,25 @@ def main():
     elif getattr(args, "val_num_images", None) and args.val_num_images > 0:
         val_images_limit = args.val_num_images
 
-    val_root = args.val_root if args.val_root else os.path.join(args.data_root, "testing/image_2" if is_kins else "val2017")
-    val_ann = args.val_ann_file if args.val_ann_file else os.path.join(args.data_root, "update_test_2020.json" if is_kins else "annotations/instances_val2017.json")
+    if is_kins:
+        val_ann_candidates = [
+            os.path.join(args.data_root, "update_test_2020.json"),
+            os.path.join(args.data_root, "annotations", "update_test_2020.json"),
+            os.path.join(args.data_root, "instances_val.json"),
+        ]
+        default_val_ann = next((p for p in val_ann_candidates if os.path.exists(p)), val_ann_candidates[0])
+        val_root_candidates = [
+            os.path.join(args.data_root, "testing/image_2"),
+            os.path.join(args.data_root, "image_2"),
+            args.data_root,
+        ]
+        default_val_root = next((p for p in val_root_candidates if os.path.exists(p)), val_root_candidates[0])
+    else:
+        default_val_root = os.path.join(args.data_root, "val2017")
+        default_val_ann = os.path.join(args.data_root, "annotations/instances_val2017.json")
+
+    val_root = args.val_root if args.val_root else default_val_root
+    val_ann = args.val_ann_file if args.val_ann_file else default_val_ann
     val_transforms = get_val_transforms(img_size=640)
 
     if os.path.exists(val_root) and os.path.exists(val_ann):
