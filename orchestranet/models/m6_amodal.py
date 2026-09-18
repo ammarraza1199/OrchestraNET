@@ -111,7 +111,9 @@ class M6AmodalCompleter(BaseMicroModel):
         completion_conf = self.conf_head(decoded)
 
         return {
+            "decoded": decoded,
             "amodal_bbox_offset": amodal_bbox,
+            "raw_mask_logits": amodal_mask,
             "amodal_masks": torch.sigmoid(amodal_mask),
             "completion_confidence": completion_conf,
         }

@@ -485,6 +485,63 @@ class TestTrainingSmoke:
         trainer.fpn.load_state_dict(ckpt["fpn_state_dict"])
         assert "optimizer_state_dict" not in ckpt
 
+    def test_check_finiteness_diagnostic_helper(self):
+        """Verify _check_finiteness raises descriptive RuntimeError on NaNs/Infs with full metadata."""
+        from training.train_individual import _check_finiteness
+
+        # Valid tensor passes
+        valid_t = torch.tensor([1.0, 2.0, 3.0])
+        _check_finiteness(valid_t, "test_valid", batch_idx=0, image_ids=[101])
+
+        # NaN tensor raises
+        nan_t = torch.tensor([1.0, float("nan"), 3.0])
+        with pytest.raises(RuntimeError) as excinfo:
+            _check_finiteness(nan_t, "test_nan_tensor", batch_idx=2, image_ids=[555])
+        err_msg = str(excinfo.value)
+        assert "test_nan_tensor" in err_msg
+        assert "batch 2" in err_msg
+        assert "image_ids=[555]" in err_msg
+        assert "NaNs=1" in err_msg
+
+        # Inf tensor raises
+        inf_t = torch.tensor([float("inf"), 2.0])
+        with pytest.raises(RuntimeError) as excinfo_inf:
+            _check_finiteness(inf_t, "test_inf_tensor", batch_idx=0)
+        assert "Infs=1" in str(excinfo_inf.value)
+
+    def test_validate_m6_catches_non_finite_tensor(self, device):
+        """Verify validate_m6 stops immediately with RuntimeError if M6 output has non-finite values."""
+        from training.train_individual import IndividualTrainer, validate_m6
+
+        trainer = IndividualTrainer("m6", device=device)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "image_id": torch.tensor([1001, 1002]),
+            "boxes": torch.zeros((2, 100, 4), device=device),
+            "labels": torch.zeros((2, 100), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([2, 1], device=device),
+            "amodal_boxes": torch.zeros((2, 50, 4), device=device),
+            "amodal_masks": torch.zeros((2, 50, 28, 28), device=device),
+            "is_occluded": torch.zeros((2, 50), device=device),
+            "occlusion_mask": torch.zeros((2, 1, 640, 640), device=device),
+        }
+        val_loader = [(images, targets)]
+
+        # Patch trainer.model to inject NaN into decoded output
+        orig_forward = trainer.model.forward
+        def bad_forward(features, context=None):
+            out = orig_forward(features, context=context)
+            out["decoded"] = out["decoded"].clone()
+            out["decoded"][0, 0, 0] = float("nan")
+            return out
+
+        trainer.model.forward = bad_forward
+        with pytest.raises(RuntimeError) as exc_info:
+            validate_m6(trainer, val_loader, device=device, num_images=2)
+        assert "M6 transformer output / decoded tensor" in str(exc_info.value)
+        assert "image_ids=[1001, 1002]" in str(exc_info.value)
+        trainer.model.forward = orig_forward
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

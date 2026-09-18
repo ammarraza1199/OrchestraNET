@@ -419,6 +419,51 @@ def validate_loss(
     return res
 
 
+def _check_finiteness(
+    tensor: torch.Tensor,
+    name: str,
+    batch_idx: int,
+    image_ids: list | None = None,
+) -> None:
+    """
+    Check finiteness of a tensor during M6 evaluation.
+    On non-finite tensor:
+      - prints batch index
+      - prints dataset image IDs if available
+      - prints tensor name, shape, dtype, NaN count, Inf count, finite min/max/mean
+      - raises descriptive RuntimeError stopping evaluation immediately.
+    """
+    if not torch.isfinite(tensor).all():
+        nan_count = int(torch.isnan(tensor).sum().item())
+        inf_count = int(torch.isinf(tensor).sum().item())
+        finite_mask = torch.isfinite(tensor)
+        if finite_mask.any():
+            fin_vals = tensor[finite_mask].float()
+            fin_min = float(fin_vals.min().item())
+            fin_max = float(fin_vals.max().item())
+            fin_mean = float(fin_vals.mean().item())
+            stats_str = f"min={fin_min:.6f}, max={fin_max:.6f}, mean={fin_mean:.6f}"
+        else:
+            stats_str = "no finite values"
+
+        id_str = f", image_ids={image_ids}" if image_ids is not None else ""
+        print("\n" + "!" * 70, flush=True)
+        print("[NON-FINITE TENSOR DETECTED IN M6 EVALUATION]", flush=True)
+        print(f"  Batch index:    {batch_idx}{id_str}", flush=True)
+        print(f"  Tensor name:    {name}", flush=True)
+        print(f"  Shape:          {list(tensor.shape)}", flush=True)
+        print(f"  Dtype:          {tensor.dtype}", flush=True)
+        print(f"  NaN count:      {nan_count}", flush=True)
+        print(f"  Inf count:      {inf_count}", flush=True)
+        print(f"  Finite stats:   {stats_str}", flush=True)
+        print("!" * 70 + "\n", flush=True)
+
+        raise RuntimeError(
+            f"Non-finite tensor detected in M6 evaluation: '{name}' "
+            f"at batch {batch_idx}{id_str} (NaNs={nan_count}, Infs={inf_count}, finite stats: {stats_str})"
+        )
+
+
 @torch.no_grad()
 def validate_m6(
     trainer: IndividualTrainer,
@@ -443,7 +488,7 @@ def validate_m6(
     bbox_maes = []
     count = 0
 
-    for images, targets in val_loader:
+    for batch_idx, (images, targets) in enumerate(val_loader):
         if num_images is not None and count >= num_images:
             break
 
@@ -454,10 +499,45 @@ def validate_m6(
             for k, v in targets.items()
         }
 
-        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+        # Extract image IDs if available from targets
+        image_ids = None
+        for id_k in ("image_id", "image_ids", "id", "img_id"):
+            if id_k in targets:
+                v = targets[id_k]
+                image_ids = v.tolist() if isinstance(v, torch.Tensor) else list(v)
+                break
+
+        # Diagnostic FP32 forward path: CUDA autocast explicitly disabled
+        with torch.amp.autocast("cuda", enabled=False):
+            # 1. Backbone features
             backbone_features = trainer.backbone(images)
+            for i_feat, feat in enumerate(backbone_features):
+                _check_finiteness(feat, f"backbone_features[{i_feat}]", batch_idx, image_ids)
+
+            # 2. FPN features
             fpn_features = trainer.fpn(backbone_features)
+            for i_feat, feat in enumerate(fpn_features):
+                _check_finiteness(feat, f"fpn_features[{i_feat}]", batch_idx, image_ids)
+
+            # M6 forward
             predictions = trainer.model(fpn_features)
+
+        # 3. M6 transformer output / decoded tensor
+        if "decoded" in predictions and predictions["decoded"] is not None:
+            _check_finiteness(predictions["decoded"], "M6 transformer output / decoded tensor", batch_idx, image_ids)
+
+        # 4. amodal_bbox_offset
+        _check_finiteness(predictions["amodal_bbox_offset"], "amodal_bbox_offset", batch_idx, image_ids)
+
+        # 5. raw amodal_mask logits BEFORE sigmoid
+        if "raw_mask_logits" in predictions and predictions["raw_mask_logits"] is not None:
+            _check_finiteness(predictions["raw_mask_logits"], "raw amodal_mask logits BEFORE sigmoid", batch_idx, image_ids)
+
+        # 6. amodal_masks AFTER sigmoid
+        _check_finiteness(predictions["amodal_masks"], "amodal_masks AFTER sigmoid", batch_idx, image_ids)
+
+        # 7. completion_confidence
+        _check_finiteness(predictions["completion_confidence"], "completion_confidence", batch_idx, image_ids)
 
         losses = trainer.model.get_loss(predictions, targets_device)
 
