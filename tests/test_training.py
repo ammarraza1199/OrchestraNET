@@ -314,6 +314,47 @@ class TestTrainingSmoke:
         assert "val_amodal_mask_loss" in val_res
         assert "val_amodal_conf_loss" in val_res
 
+        # Test M6 specific validation reporting Amodal Mask IoU and Bbox MAE
+        from training.train_individual import validate_m6
+        val_m6_res = validate_m6(trainer, val_loader, device=device)
+        assert "val_loss" in val_m6_res
+        assert "val_amodal_mask_iou" in val_m6_res
+        assert "val_amodal_bbox_mae" in val_m6_res
+        assert 0.0 <= val_m6_res["val_amodal_mask_iou"] <= 1.0
+        assert val_m6_res["val_amodal_bbox_mae"] >= 0.0
+
+    def test_compute_amodal_metrics(self):
+        """Test compute_amodal_metrics with known ground-truth and predictions."""
+        from orchestranet.utils.metrics import compute_amodal_metrics
+
+        # Perfect match scenario
+        preds = {
+            "amodal_masks": torch.ones((1, 2, 28, 28)),  # > 0.5 everywhere
+            "amodal_bbox_offset": torch.tensor([[[10.0, 20.0, 30.0, 40.0], [5.0, 5.0, 5.0, 5.0]]]),
+        }
+        targets = {
+            "amodal_masks": torch.ones((1, 2, 28, 28)),
+            "amodal_boxes": torch.tensor([[[10.0, 20.0, 30.0, 40.0], [5.0, 5.0, 5.0, 5.0]]]),
+            "num_objects": torch.tensor([2]),
+        }
+        res = compute_amodal_metrics(preds, targets)
+        assert abs(res["amodal_mask_iou"] - 1.0) < 1e-4
+        assert abs(res["amodal_bbox_mae"] - 0.0) < 1e-4
+
+        # Partial error scenario
+        preds_err = {
+            "amodal_masks": torch.zeros((1, 1, 28, 28)),  # 0 overlap
+            "amodal_bbox_offset": torch.tensor([[[12.0, 22.0, 32.0, 42.0]]]),  # delta = 2.0
+        }
+        targets_err = {
+            "amodal_masks": torch.ones((1, 1, 28, 28)),
+            "amodal_boxes": torch.tensor([[[10.0, 20.0, 30.0, 40.0]]]),
+            "num_objects": torch.tensor([1]),
+        }
+        res_err = compute_amodal_metrics(preds_err, targets_err)
+        assert abs(res_err["amodal_mask_iou"] - 0.0) < 1e-4
+        assert abs(res_err["amodal_bbox_mae"] - 2.0) < 1e-4
+
     def test_m6_kins_dataset_selection(self):
         """Verify KINS dataset selection and display label for M6."""
         from training.train_individual import MODEL_REGISTRY

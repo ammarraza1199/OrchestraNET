@@ -48,7 +48,7 @@ from orchestranet.losses.self_supervised_loss import (
 from orchestranet.utils.config import Config
 from orchestranet.utils.ema import ModelEMA
 from orchestranet.utils.logger import TrainingLogger, AverageMeter
-from orchestranet.utils.metrics import DetectionMetrics
+from orchestranet.utils.metrics import DetectionMetrics, compute_amodal_metrics
 
 
 MODEL_REGISTRY = {
@@ -90,6 +90,8 @@ def parse_args():
                         help="Path to validation images directory (defaults to <data-root>/val2017)")
     parser.add_argument("--val-ann-file", default=None,
                         help="Path to validation annotations JSON (defaults to <data-root>/annotations/instances_val2017.json)")
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Run validation only on the checkpoint and exit")
     return parser.parse_args()
 
 
@@ -417,6 +419,69 @@ def validate_loss(
     return res
 
 
+@torch.no_grad()
+def validate_m6(
+    trainer: IndividualTrainer,
+    val_loader: DataLoader,
+    device: str,
+    num_images: int | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate validation loss and amodal completion metrics for M6:
+      - val_loss: Total validation loss
+      - val_amodal_mask_iou: Mean IoU between predicted 28x28 and GT amodal mask
+      - val_amodal_bbox_mae: Mean Absolute Error between predicted and GT amodal bbox offsets
+      - val_amodal_bbox_loss, val_amodal_mask_loss, val_amodal_conf_loss
+    """
+    trainer.backbone.eval()
+    trainer.fpn.eval()
+    trainer.model.eval()
+
+    total_loss_sum = 0.0
+    comp_sums = defaultdict(float)
+    mask_ious = []
+    bbox_maes = []
+    count = 0
+
+    for images, targets in val_loader:
+        if num_images is not None and count >= num_images:
+            break
+
+        B = images.shape[0]
+        images = images.to(device, non_blocking=True)
+        targets_device = {
+            k: v.to(device, non_blocking=True) if (isinstance(v, torch.Tensor) and k != "num_objects") else v
+            for k, v in targets.items()
+        }
+
+        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+            backbone_features = trainer.backbone(images)
+            fpn_features = trainer.fpn(backbone_features)
+            predictions = trainer.model(fpn_features)
+            losses = trainer.model.get_loss(predictions, targets_device)
+
+        total_loss_sum += losses["total_loss"].item() * B
+        for k, v in losses.items():
+            if isinstance(v, torch.Tensor) and k != "total_loss":
+                comp_sums[k] += v.item() * B
+
+        # Compute Amodal Mask IoU & Bbox MAE on valid GT objects
+        metrics = compute_amodal_metrics(predictions, targets)
+        mask_ious.extend(metrics["ious"])
+        bbox_maes.extend(metrics["maes"])
+
+        count += B
+
+    avg_total = total_loss_sum / max(1, count)
+    res = {"val_loss": avg_total}
+    for k, v in comp_sums.items():
+        res[f"val_{k}"] = v / max(1, count)
+
+    res["val_amodal_mask_iou"] = float(np.mean(mask_ious)) if mask_ious else 0.0
+    res["val_amodal_bbox_mae"] = float(np.mean(bbox_maes)) if bbox_maes else 0.0
+    return res
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -634,6 +699,44 @@ def main():
             ema.load_state_dict(ckpt["ema_state_dict"])
         logger.info(f"   Resumed from epoch {start_epoch} (best_loss: {best_loss:.4f}, best_map50: {best_map50:.4f})")
 
+    # Evaluation only mode
+    if getattr(args, "eval_only", False):
+        if val_loader is None:
+            logger.error("❌ Validation loader could not be created. Check --val-root and --val-ann-file / --data-root.")
+            sys.exit(1)
+        logger.info(f"\n🧪 Running evaluation only for {args.model.upper()}...")
+        if ema:
+            ema.apply_shadow(trainer.model)
+        if args.model == "m1":
+            val_metrics = validate_m1(
+                trainer,
+                val_loader,
+                device=args.device,
+                num_images=val_images_limit,
+            )
+        elif args.model == "m6":
+            val_metrics = validate_m6(
+                trainer,
+                val_loader,
+                device=args.device,
+                num_images=val_images_limit,
+            )
+        else:
+            val_metrics = validate_loss(
+                trainer,
+                val_loader,
+                device=args.device,
+                num_images=val_images_limit,
+            )
+        if ema:
+            ema.restore(trainer.model)
+
+        print(f"\n=== {args.model.upper()} Evaluation Results ===")
+        for k, v in val_metrics.items():
+            if isinstance(v, (int, float)):
+                print(f"  {k}: {v:.4f}")
+        return
+
     logger.info(f"\n🚀 Training {args.model} for {args.epochs} epochs...")
 
     global_step = start_epoch * len(loader)
@@ -735,6 +838,24 @@ def main():
                 if current_map50 > best_map50:
                     best_map50 = current_map50
                     is_best_map50 = True
+            elif args.model == "m6":
+                logger.info(f"  🔍 Validating M6 on validation set...")
+                val_metrics = validate_m6(
+                    trainer,
+                    val_loader,
+                    device=args.device,
+                    num_images=val_images_limit,
+                )
+                loss_comp_str = " | ".join(
+                    f"{k}: {v:.4f}" for k, v in val_metrics.items()
+                )
+                logger.info(f"  📊 Val M6 | {loss_comp_str}")
+                for m_k, m_v in val_metrics.items():
+                    logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+
+                if val_metrics["val_loss"] < best_val_loss:
+                    best_val_loss = val_metrics["val_loss"]
+                    is_best_val_loss = True
             else:
                 logger.info(f"  🔍 Validating {args.model.upper()} on validation set...")
                 val_metrics = validate_loss(

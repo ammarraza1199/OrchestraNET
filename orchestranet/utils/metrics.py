@@ -7,6 +7,7 @@ Includes standard detection metrics (mAP) plus occlusion-specific metrics.
 import numpy as np
 import torch
 from collections import defaultdict
+from typing import Any
 
 
 def compute_iou(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
@@ -44,6 +45,81 @@ def compute_ap(recall: np.ndarray, precision: np.ndarray) -> float:
         ap += prec_at_r.max() if len(prec_at_r) > 0 else 0.0
 
     return ap / 101.0
+
+
+def compute_amodal_metrics(
+    predictions: dict[str, torch.Tensor | np.ndarray],
+    targets: dict[str, torch.Tensor | np.ndarray],
+) -> dict[str, Any]:
+    """
+    Compute amodal completion evaluation metrics:
+      1. Amodal Mask IoU: Mean intersection-over-union between predicted 28x28
+         amodal masks and ground-truth amodal masks.
+      2. Bbox MAE: Mean Absolute Error between predicted amodal bbox offsets
+         and ground-truth amodal bbox offsets.
+
+    Evaluates exclusively on valid ground-truth objects (up to num_objects).
+    """
+    pred_masks = predictions.get("amodal_masks")
+    pred_boxes = predictions.get("amodal_bbox_offset")
+    gt_masks = targets.get("amodal_masks")
+    gt_boxes = targets.get("amodal_boxes")
+    num_objs = targets.get("num_objects")
+
+    if pred_masks is None or gt_masks is None or pred_boxes is None or gt_boxes is None:
+        return {
+            "amodal_mask_iou": 0.0,
+            "amodal_bbox_mae": 0.0,
+            "ious": [],
+            "maes": [],
+        }
+
+    if isinstance(pred_masks, torch.Tensor):
+        pred_masks = pred_masks.detach().cpu()
+    if isinstance(pred_boxes, torch.Tensor):
+        pred_boxes = pred_boxes.detach().cpu()
+    if isinstance(gt_masks, torch.Tensor):
+        gt_masks = gt_masks.detach().cpu()
+    if isinstance(gt_boxes, torch.Tensor):
+        gt_boxes = gt_boxes.detach().cpu()
+
+    if isinstance(pred_masks, np.ndarray):
+        pred_masks = torch.from_numpy(pred_masks)
+    if isinstance(pred_boxes, np.ndarray):
+        pred_boxes = torch.from_numpy(pred_boxes)
+    if isinstance(gt_masks, np.ndarray):
+        gt_masks = torch.from_numpy(gt_masks)
+    if isinstance(gt_boxes, np.ndarray):
+        gt_boxes = torch.from_numpy(gt_boxes)
+
+    B = pred_masks.shape[0]
+    mask_ious = []
+    bbox_maes = []
+
+    for b in range(B):
+        if num_objs is not None:
+            n_raw = num_objs[b].item() if isinstance(num_objs[b], torch.Tensor) else num_objs[b]
+            n_b = min(int(n_raw), pred_masks.shape[1], gt_masks.shape[1])
+        else:
+            n_b = min(pred_masks.shape[1], gt_masks.shape[1])
+
+        for i in range(n_b):
+            p_mask = pred_masks[b, i] > 0.5
+            g_mask = gt_masks[b, i] > 0.5
+            inter = (p_mask & g_mask).sum().item()
+            union = (p_mask | g_mask).sum().item()
+            iou = inter / (union + 1e-6) if union > 0 else 1.0
+            mask_ious.append(iou)
+
+            mae = torch.abs(pred_boxes[b, i] - gt_boxes[b, i]).mean().item()
+            bbox_maes.append(mae)
+
+    return {
+        "amodal_mask_iou": float(np.mean(mask_ious)) if mask_ious else 0.0,
+        "amodal_bbox_mae": float(np.mean(bbox_maes)) if bbox_maes else 0.0,
+        "ious": mask_ious,
+        "maes": bbox_maes,
+    }
 
 
 class DetectionMetrics:
