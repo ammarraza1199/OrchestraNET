@@ -249,6 +249,21 @@ class TestSelfSupervisedLoss:
         assert masked.shape == features.shape
         assert mask.shape == (2, 1, 80, 80)
 
+    def test_amp_compatibility(self):
+        """Verify SelfSupervisedOcclusionLoss executes under autocast without exception and produces finite losses."""
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        loss_fn = SelfSupervisedOcclusionLoss().to(device)
+        pred = torch.rand(2, 1, 80, 80, device=device, requires_grad=True)
+        target = torch.rand(2, 1, 80, 80, device=device)
+
+        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+            losses = loss_fn(pred, target)
+
+        assert torch.isfinite(losses["bce"])
+        assert torch.isfinite(losses["dice"])
+        assert torch.isfinite(losses["total"])
+        assert losses["total"].requires_grad
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

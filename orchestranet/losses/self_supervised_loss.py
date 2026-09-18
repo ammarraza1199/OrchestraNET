@@ -49,20 +49,24 @@ class SelfSupervisedOcclusionLoss(nn.Module):
                 target_mask, size=predicted_mask.shape[2:], mode="nearest"
             )
 
-        # BCE loss
-        bce = F.binary_cross_entropy(predicted_mask, target_mask)
+        with torch.amp.autocast("cuda", enabled=False):
+            pred_fp32 = predicted_mask.float()
+            target_fp32 = target_mask.float()
 
-        # Dice loss for better boundary prediction
-        smooth = 1.0
-        pred_flat = predicted_mask.flatten(1)
-        target_flat = target_mask.flatten(1)
-        intersection = (pred_flat * target_flat).sum(1)
-        dice = 1 - (2 * intersection + smooth) / (
-            pred_flat.sum(1) + target_flat.sum(1) + smooth
-        )
-        dice = dice.mean()
+            # BCE loss
+            bce = F.binary_cross_entropy(pred_fp32, target_fp32)
 
-        total = self.bce_weight * bce + self.dice_weight * dice
+            # Dice loss for better boundary prediction
+            smooth = 1.0
+            pred_flat = pred_fp32.flatten(1)
+            target_flat = target_fp32.flatten(1)
+            intersection = (pred_flat * target_flat).sum(1)
+            dice = 1 - (2 * intersection + smooth) / (
+                pred_flat.sum(1) + target_flat.sum(1) + smooth
+            )
+            dice = dice.mean()
+
+            total = self.bce_weight * bce + self.dice_weight * dice
 
         return {"bce": bce, "dice": dice, "total": total}
 
