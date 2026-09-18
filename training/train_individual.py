@@ -686,18 +686,36 @@ def main():
     best_map50 = 0.0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
+
         trainer.model.load_state_dict(ckpt["model_state_dict"])
+
         if "backbone_state_dict" in ckpt:
             trainer.backbone.load_state_dict(ckpt["backbone_state_dict"])
+
         if "fpn_state_dict" in ckpt:
             trainer.fpn.load_state_dict(ckpt["fpn_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_loss = ckpt.get("best_loss", float("inf"))
-        best_map50 = ckpt.get("best_map50", 0.0)
-        if ema and "ema_state_dict" in ckpt:
-            ema.load_state_dict(ckpt["ema_state_dict"])
-        logger.info(f"   Resumed from epoch {start_epoch} (best_loss: {best_loss:.4f}, best_map50: {best_map50:.4f})")
+
+        # Evaluation-only does not need optimizer/scheduler state.
+        if not getattr(args, "eval_only", False):
+            if "optimizer_state_dict" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+
+            start_epoch = ckpt.get("epoch", 0) + 1
+            best_loss = ckpt.get("best_loss", float("inf"))
+            best_map50 = ckpt.get("best_map50", 0.0)
+
+            if ema and "ema_state_dict" in ckpt:
+                ema.load_state_dict(ckpt["ema_state_dict"])
+
+            logger.info(
+                f"   Resumed from epoch {start_epoch} "
+                f"(best_loss: {best_loss:.4f}, best_map50: {best_map50:.4f})"
+            )
+        else:
+            if ema and "ema_state_dict" in ckpt:
+                ema.load_state_dict(ckpt["ema_state_dict"])
+
+            logger.info("   Loaded checkpoint weights for evaluation-only mode.")
 
     # Evaluation only mode
     if getattr(args, "eval_only", False):
