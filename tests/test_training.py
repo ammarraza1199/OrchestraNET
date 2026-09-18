@@ -542,6 +542,53 @@ class TestTrainingSmoke:
         assert "image_ids=[1001, 1002]" in str(exc_info.value)
         trainer.model.forward = orig_forward
 
+    def test_validate_m6_runs_without_cuda_autocast(self, device, capsys):
+        """Verify M6 evaluation forward pass executes with CUDA autocast disabled (FP32) and logs precision."""
+        from training.train_individual import IndividualTrainer, validate_m6
+
+        trainer = IndividualTrainer("m6", device=device)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 100, 4), device=device),
+            "labels": torch.zeros((2, 100), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([1, 1], device=device),
+            "amodal_boxes": torch.zeros((2, 50, 4), device=device),
+            "amodal_masks": torch.zeros((2, 50, 28, 28), device=device),
+            "is_occluded": torch.zeros((2, 50), device=device),
+        }
+        val_loader = [(images, targets)]
+
+        autocast_states = []
+
+        orig_backbone_forward = trainer.backbone.forward
+        def instrumented_backbone(x):
+            autocast_states.append(("backbone", torch.is_autocast_enabled()))
+            return orig_backbone_forward(x)
+        trainer.backbone.forward = instrumented_backbone
+
+        orig_fpn_forward = trainer.fpn.forward
+        def instrumented_fpn(feats):
+            autocast_states.append(("fpn", torch.is_autocast_enabled()))
+            return orig_fpn_forward(feats)
+        trainer.fpn.forward = instrumented_fpn
+
+        orig_model_forward = trainer.model.forward
+        def instrumented_model(feats, context=None):
+            autocast_states.append(("model", torch.is_autocast_enabled()))
+            return orig_model_forward(feats, context=context)
+        trainer.model.forward = instrumented_model
+
+        # Even when called inside an outer autocast block, validate_m6 disables autocast for its forward pass
+        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+            res = validate_m6(trainer, val_loader, device=device, num_images=2)
+
+        assert len(autocast_states) == 3
+        for stage, is_enabled in autocast_states:
+            assert is_enabled is False, f"Autocast was unexpectedly enabled during {stage} in validate_m6"
+
+        captured = capsys.readouterr()
+        assert "[INFO] M6 evaluation precision: FP32" in captured.out
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

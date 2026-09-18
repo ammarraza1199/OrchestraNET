@@ -482,6 +482,8 @@ def validate_m6(
     trainer.fpn.eval()
     trainer.model.eval()
 
+    print("[INFO] M6 evaluation precision: FP32", flush=True)
+
     total_loss_sum = 0.0
     comp_sums = defaultdict(float)
     mask_ious = []
