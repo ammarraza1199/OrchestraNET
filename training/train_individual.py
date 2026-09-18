@@ -918,6 +918,7 @@ def main():
         trainer.model.train()
 
         loss_meter = AverageMeter("loss")
+        component_meters = {}
         epoch_start = time.time()
 
         for batch_idx, (images, targets) in enumerate(loader):
@@ -945,6 +946,14 @@ def main():
 
             loss_val = losses["total_loss"].item()
             loss_meter.update(loss_val, images.shape[0])
+
+            # Track individual loss components for epoch-level reporting.
+            for k, v in losses.items():
+                if isinstance(v, torch.Tensor):
+                    if k not in component_meters:
+                        component_meters[k] = AverageMeter(k)
+                    component_meters[k].update(v.item(), images.shape[0])
+
             global_step += 1
 
             # Log to TensorBoard
@@ -962,11 +971,27 @@ def main():
                 print(f"  [{batch_idx}/{len(loader)}] {loss_strs}")
 
         epoch_time = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]["lr"]
+
         logger.info(
             f"Epoch {epoch}/{args.epochs} | Avg Loss: {loss_meter.avg:.4f} | "
-            f"LR: {optimizer.param_groups[0]['lr']:.6f} | Time: {epoch_time:.1f}s"
+            f"LR: {current_lr:.6f} | Time: {epoch_time:.1f}s"
         )
-        logger.log_epoch(epoch, {"avg_loss": loss_meter.avg, "lr": optimizer.param_groups[0]["lr"]})
+
+        # ============================================================
+        # Persistent epoch-level metrics
+        # ============================================================
+        # Keep a complete machine-readable record in training_log.jsonl.
+        # Validation metrics are added below after validation completes.
+        epoch_log = {
+            "epoch": epoch,
+            "avg_loss": float(loss_meter.avg),
+            "lr": float(current_lr),
+            "epoch_time_sec": float(epoch_time),
+        }
+
+        for k, meter in component_meters.items():
+            epoch_log[k] = float(meter.avg)
 
         # Validation
         val_metrics = None
@@ -1048,6 +1073,26 @@ def main():
 
             if ema:
                 ema.restore(trainer.model)
+
+        # ============================================================
+        # Persist complete epoch record after validation
+        # ============================================================
+        if val_metrics is not None:
+            for key, value in val_metrics.items():
+                if isinstance(value, (int, float)):
+                    epoch_log[key] = float(value)
+
+            # M1 diagnostics are nested inside val_metrics.
+            if args.model == "m1":
+                diagnostics = val_metrics.get("diagnostics", {})
+
+                for key, value in diagnostics.items():
+                    if isinstance(value, (int, float)):
+                        epoch_log[f"diagnostics_{key}"] = float(value)
+
+                epoch_log["validation_images"] = int(val_images_limit or 0)
+
+        logger.log_epoch(epoch, epoch_log)
 
         # Base checkpoint dictionary
         ckpt_data = {

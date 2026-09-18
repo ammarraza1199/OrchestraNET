@@ -119,6 +119,38 @@ class TestLogger:
         logger.log_scalar("train/loss", 0.5, step=1)
         logger.close()
 
+    def test_log_epoch_complete_record(self, tmp_path):
+        import json
+        logger = TrainingLogger(
+            log_dir=str(tmp_path / "test_logs"),
+            tb_enabled=False,
+        )
+        epoch_log = {
+            "epoch": 0,
+            "avg_loss": 1.234,
+            "lr": 0.0005,
+            "epoch_time_sec": 12.3,
+            "amodal_bbox_loss": 0.4,
+            "amodal_mask_loss": 0.6,
+            "amodal_conf_loss": 0.234,
+            "val_loss": 1.1,
+            "val_amodal_mask_iou": 0.75,
+            "val_amodal_bbox_mae": 2.5,
+        }
+        logger.log_epoch(0, epoch_log)
+        logger.close()
+
+        log_file = tmp_path / "test_logs" / "training_log.jsonl"
+        assert log_file.exists()
+        with open(log_file) as f:
+            lines = [json.loads(line) for line in f]
+        assert len(lines) == 1
+        record = lines[0]
+        assert record["epoch"] == 0
+        assert record["avg_loss"] == 1.234
+        assert record["amodal_mask_loss"] == 0.6
+        assert record["val_amodal_mask_iou"] == 0.75
+
 
 # ============ Training Smoke Test ============
 
