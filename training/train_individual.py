@@ -114,10 +114,11 @@ class IndividualTrainer:
         ).to(device)
 
         # Target micro-model
+        model_cls: Any = info["cls"]
         if model_id == "m6":
-            self.model = info["cls"](d_model=fpn_channels).to(device)
+            self.model = model_cls(d_model=fpn_channels).to(device)
         else:
-            self.model = info["cls"](in_channels=fpn_channels).to(device)
+            self.model = model_cls(in_channels=fpn_channels).to(device)
 
         if freeze_backbone:
             for p in self.backbone.parameters():

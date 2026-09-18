@@ -35,6 +35,7 @@ import time
 import traceback
 from pathlib import Path
 from datetime import datetime
+from typing import Any
 
 # Force UTF-8 output on Windows (cp1252 cannot encode emoji)
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
