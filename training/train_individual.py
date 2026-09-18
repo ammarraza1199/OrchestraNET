@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+from collections import defaultdict
 import os
 import sys
 import time
@@ -371,6 +372,47 @@ def validate_m1(
     return results
 
 
+@torch.no_grad()
+def validate_loss(
+    trainer: IndividualTrainer,
+    val_loader: DataLoader,
+    device: str,
+    num_images: int | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate validation loss for non-M1 micro-models (M2, M3, M4, M6).
+    """
+    trainer.backbone.eval()
+    trainer.fpn.eval()
+    trainer.model.eval()
+
+    total_loss_sum = 0.0
+    comp_sums = defaultdict(float)
+    count = 0
+
+    for images, targets in val_loader:
+        if num_images is not None and count >= num_images:
+            break
+
+        B = images.shape[0]
+        images = images.to(device, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+            losses = trainer.train_step(images, targets)
+
+        total_loss_sum += losses["total_loss"].item() * B
+        for k, v in losses.items():
+            if isinstance(v, torch.Tensor) and k != "total_loss":
+                comp_sums[k] += v.item() * B
+
+        count += B
+
+    avg_total = total_loss_sum / max(1, count)
+    res = {"val_loss": avg_total}
+    for k, v in comp_sums.items():
+        res[f"val_{k}"] = v / max(1, count)
+    return res
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -409,12 +451,20 @@ def main():
     root_path = os.path.join(args.data_root, "training/image_2" if is_kins else "train2017")
     ann_path = os.path.join(args.data_root, "update_train_2020.json" if is_kins else "annotations/instances_train2017.json")
 
-    dataset = COCODetectionDataset(
-        root=root_path,
-        ann_file=ann_path,
-        transforms=train_transforms,
-        occlusion_aug=occ_aug,
-    )
+    if is_kins:
+        from orchestranet.data.kins_dataset import KINSAmodalDataset
+        dataset = KINSAmodalDataset(
+            root=root_path,
+            ann_file=ann_path,
+            transforms=train_transforms,
+        )
+    else:
+        dataset = COCODetectionDataset(
+            root=root_path,
+            ann_file=ann_path,
+            transforms=train_transforms,
+            occlusion_aug=occ_aug,
+        )
     train_loader_kwargs = {
         "batch_size": args.batch_size,
         "shuffle": True,
@@ -428,7 +478,7 @@ def main():
 
     loader = DataLoader(dataset, **train_loader_kwargs)
 
-    # Validation DataLoader for M1
+    # Validation DataLoader
     val_loader = None
     val_images_limit = None
     if getattr(args, "val_images", 0) and args.val_images > 0:
@@ -436,36 +486,43 @@ def main():
     elif getattr(args, "val_num_images", None) and args.val_num_images > 0:
         val_images_limit = args.val_num_images
 
-    if args.model == "m1":
-        val_root = args.val_root if args.val_root else os.path.join(args.data_root, "val2017")
-        val_ann = args.val_ann_file if args.val_ann_file else os.path.join(args.data_root, "annotations/instances_val2017.json")
-        val_transforms = get_val_transforms(img_size=640)
+    val_root = args.val_root if args.val_root else os.path.join(args.data_root, "testing/image_2" if is_kins else "val2017")
+    val_ann = args.val_ann_file if args.val_ann_file else os.path.join(args.data_root, "update_test_2020.json" if is_kins else "annotations/instances_val2017.json")
+    val_transforms = get_val_transforms(img_size=640)
 
-        if os.path.exists(val_root) and os.path.exists(val_ann):
+    if os.path.exists(val_root) and os.path.exists(val_ann):
+        if is_kins:
+            from orchestranet.data.kins_dataset import KINSAmodalDataset
+            val_dataset = KINSAmodalDataset(
+                root=val_root,
+                ann_file=val_ann,
+                transforms=val_transforms,
+            )
+        else:
             val_dataset = COCODetectionDataset(
                 root=val_root,
                 ann_file=val_ann,
                 transforms=val_transforms,
             )
-            val_loader_kwargs = {
-                "batch_size": 1,
-                "shuffle": False,
-                "num_workers": args.num_workers,
-                "pin_memory": True,
-            }
-            if args.num_workers > 0:
-                val_loader_kwargs["persistent_workers"] = True
-                val_loader_kwargs["prefetch_factor"] = 2
+        val_loader_kwargs = {
+            "batch_size": 1 if args.model == "m1" else args.batch_size,
+            "shuffle": False,
+            "num_workers": args.num_workers,
+            "pin_memory": True,
+        }
+        if args.num_workers > 0:
+            val_loader_kwargs["persistent_workers"] = True
+            val_loader_kwargs["prefetch_factor"] = 2
 
-            val_loader = DataLoader(val_dataset, **val_loader_kwargs)
-            logger.info(f"   Validation: {len(val_dataset)} images from {val_root}")
-            if val_images_limit:
-                logger.info(f"   Validation image cap: {val_images_limit}")
-        else:
-            logger.warning(
-                f"⚠️  Validation dataset not found ({val_root} or {val_ann}). "
-                "Validation will be skipped."
-            )
+        val_loader = DataLoader(val_dataset, **val_loader_kwargs)
+        logger.info(f"   Validation: {len(val_dataset)} images from {val_root}")
+        if val_images_limit:
+            logger.info(f"   Validation image cap: {val_images_limit}")
+    else:
+        logger.warning(
+            f"⚠️  Validation dataset not found ({val_root} or {val_ann}). "
+            "Validation will be skipped."
+        )
 
     # Optimizer
     trainable_params = [p for p in trainer.all_params if p.requires_grad]
@@ -518,6 +575,7 @@ def main():
     # Resume
     start_epoch = 0
     best_loss = float("inf")
+    best_val_loss = float("inf")
     best_map50 = 0.0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
@@ -594,49 +652,68 @@ def main():
         )
         logger.log_epoch(epoch, {"avg_loss": loss_meter.avg, "lr": optimizer.param_groups[0]["lr"]})
 
-        # Validation for M1
+        # Validation
         val_metrics = None
         is_best_map50 = False
+        is_best_val_loss = False
         if val_loader is not None and (epoch + 1) % args.val_freq == 0:
-            logger.info(f"  🔍 Validating M1 on COCO val2017...")
             if ema:
                 ema.apply_shadow(trainer.model)
 
-            val_metrics = validate_m1(
-                trainer,
-                val_loader,
-                device=args.device,
-                num_images=val_images_limit,
-            )
+            if args.model == "m1":
+                logger.info(f"  🔍 Validating M1 on COCO val2017...")
+                val_metrics = validate_m1(
+                    trainer,
+                    val_loader,
+                    device=args.device,
+                    num_images=val_images_limit,
+                )
+                diag = val_metrics.get("diagnostics", {})
+                logger.info(
+                    f"  📊 Val M1 | "
+                    f"mAP@50: {val_metrics['mAP@50']:.4f} | "
+                    f"mAP@50:95: {val_metrics['mAP@50:95']:.4f} | "
+                    f"AP_s: {val_metrics['AP_small']:.4f} | "
+                    f"AP_m: {val_metrics['AP_medium']:.4f} | "
+                    f"AP_l: {val_metrics['AP_large']:.4f}"
+                )
+                if diag:
+                    logger.info(
+                        f"  🔬 Diagnostics: GT={diag.get('gt_count', 0)} | "
+                        f"RawPreds={diag.get('raw_preds', 0):,} | "
+                        f"AfterConf={diag.get('after_conf', 0):,} | "
+                        f"AfterNMS={diag.get('after_nms', 0):,} | "
+                        f"Score[min={diag.get('raw_score_min', 0.0):.4f}, mean={diag.get('raw_score_mean', 0.0):.4f}, max={diag.get('raw_score_max', 0.0):.4f}]"
+                    )
+                for m_k, m_v in val_metrics.items():
+                    if isinstance(m_v, (int, float)):
+                        logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+
+                current_map50 = val_metrics["mAP@50"]
+                if current_map50 > best_map50:
+                    best_map50 = current_map50
+                    is_best_map50 = True
+            else:
+                logger.info(f"  🔍 Validating {args.model.upper()} on validation set...")
+                val_metrics = validate_loss(
+                    trainer,
+                    val_loader,
+                    device=args.device,
+                    num_images=val_images_limit,
+                )
+                loss_comp_str = " | ".join(
+                    f"{k}: {v:.4f}" for k, v in val_metrics.items()
+                )
+                logger.info(f"  📊 Val {args.model.upper()} | {loss_comp_str}")
+                for m_k, m_v in val_metrics.items():
+                    logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+
+                if val_metrics["val_loss"] < best_val_loss:
+                    best_val_loss = val_metrics["val_loss"]
+                    is_best_val_loss = True
 
             if ema:
                 ema.restore(trainer.model)
-
-            diag = val_metrics.get("diagnostics", {})
-            logger.info(
-                f"  📊 Val M1 | "
-                f"mAP@50: {val_metrics['mAP@50']:.4f} | "
-                f"mAP@50:95: {val_metrics['mAP@50:95']:.4f} | "
-                f"AP_s: {val_metrics['AP_small']:.4f} | "
-                f"AP_m: {val_metrics['AP_medium']:.4f} | "
-                f"AP_l: {val_metrics['AP_large']:.4f}"
-            )
-            if diag:
-                logger.info(
-                    f"  🔬 Diagnostics: GT={diag.get('gt_count', 0)} | "
-                    f"RawPreds={diag.get('raw_preds', 0):,} | "
-                    f"AfterConf={diag.get('after_conf', 0):,} | "
-                    f"AfterNMS={diag.get('after_nms', 0):,} | "
-                    f"Score[min={diag.get('raw_score_min', 0.0):.4f}, mean={diag.get('raw_score_mean', 0.0):.4f}, max={diag.get('raw_score_max', 0.0):.4f}]"
-                )
-            for m_k, m_v in val_metrics.items():
-                if isinstance(m_v, (int, float)):
-                    logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
-
-            current_map50 = val_metrics["mAP@50"]
-            if current_map50 > best_map50:
-                best_map50 = current_map50
-                is_best_map50 = True
 
         # Base checkpoint dictionary
         ckpt_data = {
@@ -648,6 +725,7 @@ def main():
             "optimizer_state_dict": optimizer.state_dict(),
             "avg_loss": loss_meter.avg,
             "best_loss": best_loss,
+            "best_val_loss": best_val_loss,
             "best_map50": best_map50,
         }
         if val_metrics is not None:
@@ -655,11 +733,15 @@ def main():
         if ema:
             ckpt_data["ema_state_dict"] = ema.state_dict()
 
-        # Save m1_best_map50.pt whenever validation mAP@50 improves
+        # Save best validation checkpoints
         if is_best_map50:
             best_map_path = os.path.join(args.save_dir, f"{args.model}_best_map50.pt")
             torch.save(ckpt_data, best_map_path)
             logger.info(f"  🏆 New best validation mAP@50 ({best_map50:.4f}): {best_map_path}")
+        if is_best_val_loss:
+            best_val_path = os.path.join(args.save_dir, f"{args.model}_best_val.pt")
+            torch.save(ckpt_data, best_val_path)
+            logger.info(f"  🏆 New lowest validation loss ({best_val_loss:.4f}): {best_val_path}")
 
         # Save periodic or lowest-loss checkpoints
         is_best_loss = loss_meter.avg < best_loss
@@ -674,9 +756,9 @@ def main():
                 best_loss_path = os.path.join(args.save_dir, f"{args.model}_best.pt")
                 torch.save(ckpt_data, best_loss_path)
                 if args.model == "m1":
-                    logger.info(f"  📉 New lowest loss checkpoint ({best_loss:.4f}): {best_loss_path}")
+                    logger.info(f"  📉 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
                 else:
-                    logger.info(f"  🏆 New best model (loss: {best_loss:.4f}): {best_loss_path}")
+                    logger.info(f"  🏆 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
 
     logger.flush()
     logger.close()

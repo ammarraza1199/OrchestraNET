@@ -223,6 +223,59 @@ class TestTrainingSmoke:
                          if p.grad is not None and p.grad.abs().sum() > 0)
         assert grad_count > 0
 
+    def test_m2_individual_trainer_step(self, device):
+        """Test M2 individual training and self-supervised loss."""
+        from training.train_individual import IndividualTrainer, validate_loss
+        trainer = IndividualTrainer(model_id="m2", device=device, freeze_backbone=True)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 10, 4), device=device),
+            "labels": torch.zeros((2, 10), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([0, 0], device=device),
+        }
+        losses = trainer.train_step(images, targets)
+        assert "total_loss" in losses
+        assert "ss_loss" in losses
+        assert losses["total_loss"].item() > 0
+        losses["total_loss"].backward()
+
+        val_loader = [(images, targets)]
+        val_res = validate_loss(trainer, val_loader, device=device)
+        assert "val_loss" in val_res
+        assert val_res["val_loss"] > 0
+
+    def test_m3_individual_trainer_step(self, device):
+        """Test M3 individual training and SR loss."""
+        from training.train_individual import IndividualTrainer
+        trainer = IndividualTrainer(model_id="m3", device=device, freeze_backbone=True)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 10, 4), device=device),
+            "labels": torch.zeros((2, 10), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([0, 0], device=device),
+        }
+        losses = trainer.train_step(images, targets)
+        assert "total_loss" in losses
+        assert "sr_loss" in losses
+        assert losses["total_loss"].item() > 0
+        losses["total_loss"].backward()
+
+    def test_m4_individual_trainer_step(self, device):
+        """Test M4 individual training and depth smoothness loss."""
+        from training.train_individual import IndividualTrainer
+        trainer = IndividualTrainer(model_id="m4", device=device, freeze_backbone=True)
+        images = torch.randn(2, 3, 640, 640, device=device)
+        targets = {
+            "boxes": torch.zeros((2, 10, 4), device=device),
+            "labels": torch.zeros((2, 10), dtype=torch.long, device=device),
+            "num_objects": torch.tensor([0, 0], device=device),
+        }
+        losses = trainer.train_step(images, targets)
+        assert "total_loss" in losses
+        assert "smoothness_loss" in losses
+        assert losses["total_loss"].item() > 0
+        losses["total_loss"].backward()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
