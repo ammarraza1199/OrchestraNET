@@ -58,7 +58,33 @@ class M4DepthEstimator(BaseMicroModel):
             nn.Conv2d(32, 1, 1), nn.Sigmoid())
 
     def forward(self, features, context=None):
-        p4, p5 = features[1], features[2]
+        if isinstance(features, (list, tuple)):
+            if len(features) >= 3:
+                p4, p5 = features[1], features[2]
+            elif len(features) == 2:
+                p4, p5 = features[0], features[1]
+            else:
+                raise ValueError(
+                    f"M4DepthEstimator expects at least 2 feature levels (P4, P5), got {len(features)}"
+                )
+        elif isinstance(features, dict):
+            p4 = features.get("p4", features.get("P4", features.get(1)))
+            p5 = features.get("p5", features.get("P5", features.get(2)))
+            if p4 is None or p5 is None:
+                raise KeyError(
+                    f"M4DepthEstimator requires P4 and P5 in features dict, got keys: {list(features.keys())}"
+                )
+        elif isinstance(features, torch.Tensor):
+            raise TypeError(
+                f"M4DepthEstimator expects FPN features (list/tuple of [P3, P4, P5] or [P4, P5] tensors), "
+                f"but received a single Tensor of shape {list(features.shape)}. "
+                f"Please pass images through Backbone and FPN to extract multi-scale features first."
+            )
+        else:
+            raise TypeError(
+                f"M4DepthEstimator expects features as list/tuple/dict, got {type(features)}"
+            )
+
         f4 = self.p4_proj(p4)
         f5 = self.p5_proj(p5)
         f5_up = F.interpolate(f5, size=f4.shape[2:], mode="bilinear", align_corners=False)
@@ -66,6 +92,10 @@ class M4DepthEstimator(BaseMicroModel):
         refined = self.transformer(fused)
         depth = self.decoder(refined)
         return {"depth_map": depth, "depth_features": refined}
+
+    def compute_loss(self, predictions, targets):
+        """Convenience alias for get_loss()."""
+        return self.get_loss(predictions, targets)
 
     def get_loss(self, predictions, targets):
         """

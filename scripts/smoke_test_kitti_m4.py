@@ -13,6 +13,7 @@ import sys
 import torch
 from torch.utils.data import DataLoader
 
+from orchestranet.backbone import MobileNetV4Backbone, LightweightFPN
 from orchestranet.data.kitti_depth_dataset import KITTIDepthDataset
 from orchestranet.models.m4_depth import M4DepthEstimator
 from orchestranet.evaluation.depth_metrics import DepthMetrics
@@ -153,29 +154,60 @@ def main():
     batch_images = batch_images.to(device)
     batch_targets = {k: v.to(device) for k, v in batch_targets.items()}
 
-    # Initialize M4 model
-    model = M4DepthEstimator().to(device)
-    model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    print("\n========================================")
+    print("M4 PIPELINE EXECUTION")
+    print("========================================")
+    print(f"Batch:\n{list(batch_images.shape)}")
 
-    # 4. Forward pass
+    # Initialize Backbone + FPN + M4
+    backbone = MobileNetV4Backbone(pretrained=False).to(device)
+    fpn = LightweightFPN(in_channels=backbone.get_out_channels(), out_channels=128).to(device)
+    model = M4DepthEstimator(in_channels=128).to(device)
+
+    backbone.eval()
+    fpn.eval()
+    model.train()
+
+    trainable_params = (
+        list(backbone.parameters())
+        + list(fpn.parameters())
+        + list(model.parameters())
+    )
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
+
+    # Feature extraction via Backbone + FPN
+    with torch.no_grad():
+        backbone_features = backbone(batch_images)
+        fpn_features = fpn(backbone_features)
+
+    print("\nBackbone/FPN:")
+    print(f"P3: {list(fpn_features[0].shape)}")
+    print(f"P4: {list(fpn_features[1].shape)}")
+    print(f"P5: {list(fpn_features[2].shape)}")
+
+    print("\nM4 input:")
+    print(f"type: {type(fpn_features)}")
+    print(f"number of levels: {len(fpn_features)}")
+    print(f"level shapes: {[list(f.shape) for f in fpn_features]}")
+
+    # 4. M4 Forward pass
     forward_pass = False
     try:
-        outputs = model(batch_images)
-        pred_depth = outputs["depth"]
+        outputs = model(fpn_features)
+        pred_depth = outputs["depth_map"]
         if torch.isnan(pred_depth).any() or torch.isinf(pred_depth).any():
             raise ValueError("Forward pass produced NaN or Inf predictions!")
-        print("\nforward: PASS")
+        print("\nM4 forward: PASS")
         forward_pass = True
     except Exception as e:
-        print(f"\nforward: FAIL ({e})")
+        print(f"\nM4 forward: FAIL: {type(e).__name__}: {e}")
         sys.exit(1)
 
     # 5. Loss computation
     loss_pass = False
     try:
-        loss_dict = model.compute_loss(outputs, batch_targets)
-        total_loss = loss_dict["loss"]
+        loss_dict = model.get_loss(outputs, batch_targets)
+        total_loss = loss_dict["total_loss"]
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             raise ValueError(f"Loss is NaN or Inf: {loss_dict}")
         print(
@@ -185,7 +217,7 @@ def main():
         )
         loss_pass = True
     except Exception as e:
-        print(f"loss: FAIL ({e})")
+        print(f"loss: FAIL: {type(e).__name__}: {e}")
         sys.exit(1)
 
     # 6. Backward pass
@@ -196,21 +228,24 @@ def main():
         for name, param in model.named_parameters():
             if param.grad is not None:
                 if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                    raise ValueError(f"Gradient for {name} contains NaN or Inf!")
+                    raise ValueError(f"Gradient for M4 {name} contains NaN or Inf!")
         print("backward: PASS")
         backward_pass = True
     except Exception as e:
-        print(f"backward: FAIL ({e})")
+        print(f"backward: FAIL: {type(e).__name__}: {e}")
         sys.exit(1)
 
     # 7. Optimizer step
     optimizer_pass = False
     try:
         optimizer.step()
+        for name, param in model.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                raise ValueError(f"Parameter {name} contains NaN or Inf after optimizer step!")
         print("optimizer: PASS")
         optimizer_pass = True
     except Exception as e:
-        print(f"optimizer: FAIL ({e})")
+        print(f"optimizer: FAIL: {type(e).__name__}: {e}")
         sys.exit(1)
 
     # 8. DepthMetrics
@@ -218,8 +253,8 @@ def main():
     try:
         model.eval()
         with torch.no_grad():
-            eval_outputs = model(batch_images)
-            eval_pred = eval_outputs["depth"] * 80.0
+            eval_outputs = model(fpn_features)
+            eval_pred = eval_outputs["depth_map"] * 80.0
             eval_gt = batch_targets["depth_meters"]
             eval_mask = batch_targets["valid_mask"]
 
@@ -237,7 +272,7 @@ def main():
                 print(f"  {metric_name}: {val:.4f}")
             metrics_pass = True
     except Exception as e:
-        print(f"metrics: FAIL ({e})")
+        print(f"metrics: FAIL: {type(e).__name__}: {e}")
         sys.exit(1)
 
     print("\n========================================")

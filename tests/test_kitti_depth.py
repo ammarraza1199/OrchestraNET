@@ -10,6 +10,7 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader
 
+from orchestranet.backbone import MobileNetV4Backbone, LightweightFPN
 from orchestranet.data.kitti_depth_dataset import KITTIDepthDataset, DEPTH_SCALE, MAX_DEPTH
 from orchestranet.models.m4_depth import M4DepthEstimator
 from orchestranet.evaluation.depth_metrics import DepthMetrics
@@ -327,3 +328,57 @@ def test_depth_metrics_evaluation():
     assert pytest.approx(res["d1"], abs=1e-3) == 1.0  # max(22/20, 20/22) = 1.1 < 1.25
     assert np.isfinite(res["RMSE"])
     assert np.isfinite(res["SILog"])
+
+
+def test_m4_full_pipeline_batch_size_2():
+    """Test full pipeline integration: batch of 2 images -> Backbone -> FPN -> M4."""
+    backbone = MobileNetV4Backbone(pretrained=False)
+    fpn = LightweightFPN(in_channels=backbone.get_out_channels(), out_channels=128)
+    model = M4DepthEstimator(in_channels=128)
+
+    images = torch.randn(2, 3, 640, 640)
+    backbone_features = backbone(images)
+    fpn_features = fpn(backbone_features)
+
+    assert len(fpn_features) == 3
+    assert fpn_features[0].shape == (2, 128, 80, 80)
+    assert fpn_features[1].shape == (2, 128, 40, 40)
+    assert fpn_features[2].shape == (2, 128, 20, 20)
+
+    outputs = model(fpn_features)
+    assert "depth_map" in outputs
+    assert outputs["depth_map"].shape == (2, 1, 40, 40)
+
+
+def test_m4_features_input_contract_regression():
+    """
+    Test reproducing the IndexError / TypeError when passing incorrect feature shapes.
+    Passing a raw image Tensor of shape [2, 3, 640, 640] raises TypeError with helpful guidance.
+    Passing [P4, P5] (2 levels) or [P3, P4, P5] (3 levels) executes forward successfully.
+    """
+    model = M4DepthEstimator(in_channels=128)
+
+    # 1. Raw image tensor passed directly should fail informatively with TypeError
+    raw_tensor = torch.randn(2, 3, 640, 640)
+    with pytest.raises(TypeError, match="M4DepthEstimator expects FPN features"):
+        model(raw_tensor)
+
+    # 2. 2-level features [P4, P5] should work
+    two_levels = [
+        torch.randn(2, 128, 40, 40),
+        torch.randn(2, 128, 20, 20),
+    ]
+    out2 = model(two_levels)
+    assert "depth_map" in out2
+    assert out2["depth_map"].shape == (2, 1, 40, 40)
+
+    # 3. 3-level features [P3, P4, P5] should work
+    three_levels = [
+        torch.randn(2, 128, 80, 80),
+        torch.randn(2, 128, 40, 40),
+        torch.randn(2, 128, 20, 20),
+    ]
+    out3 = model(three_levels)
+    assert "depth_map" in out3
+    assert out3["depth_map"].shape == (2, 1, 40, 40)
+
