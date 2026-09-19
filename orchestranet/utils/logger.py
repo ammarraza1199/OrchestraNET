@@ -52,6 +52,10 @@ class TrainingLogger:
         self.json_path = self.log_dir / "training_log.jsonl"
         self._step_data = {}
 
+        # Persistent training.log file
+        self.log_file_path = self.log_dir / "training.log"
+        self._log_file = open(self.log_file_path, "a", encoding="utf-8")
+
     def log_scalar(self, tag: str, value: float, step: int):
         """Log a single scalar value."""
         if self.tb_writer:
@@ -73,16 +77,31 @@ class TrainingLogger:
     def log_epoch(self, epoch: int, metrics: dict):
         """Log end-of-epoch metrics to JSON."""
         record = {"epoch": epoch, "timestamp": time.time(), **metrics}
-        with open(self.json_path, "a") as f:
+        with open(self.json_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
+    def _write_log(self, level: str, msg: str, stream=None):
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{timestamp} | {level} | {msg}"
+        if stream:
+            print(line, file=stream)
+        else:
+            print(line)
+        if self._log_file and not self._log_file.closed:
+            self._log_file.write(line + "\n")
+            self._log_file.flush()
+
     def info(self, msg: str):
-        """Print info message."""
-        print(f"[INFO] {msg}")
+        """Log info message to console and training.log."""
+        self._write_log("INFO", msg, stream=sys.stdout)
 
     def warning(self, msg: str):
-        """Print warning message."""
-        print(f"[WARN] {msg}", file=sys.stderr)
+        """Log warning message to stderr and training.log."""
+        self._write_log("WARN", msg, stream=sys.stderr)
+
+    def error(self, msg: str):
+        """Log error message to stderr and training.log."""
+        self._write_log("ERROR", msg, stream=sys.stderr)
 
     def log_model_graph(self, model, dummy_input):
         """Log model graph to TensorBoard."""
@@ -93,14 +112,19 @@ class TrainingLogger:
                 pass  # Graph logging is best-effort
 
     def flush(self):
-        """Flush TensorBoard writer."""
+        """Flush TensorBoard and file writer."""
         if self.tb_writer:
             self.tb_writer.flush()
+        if self._log_file and not self._log_file.closed:
+            self._log_file.flush()
 
     def close(self):
         """Close all loggers."""
         if self.tb_writer:
             self.tb_writer.close()
+        if self._log_file and not self._log_file.closed:
+            self._log_file.flush()
+            self._log_file.close()
 
 
 class AverageMeter:

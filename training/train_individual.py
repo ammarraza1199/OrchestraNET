@@ -21,6 +21,7 @@ Usage:
 import argparse
 from collections import defaultdict
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.ops import batched_nms
 
@@ -96,6 +98,8 @@ def parse_args():
                         help="Explicit dataset name override (e.g., kitti, kins, coco)")
     parser.add_argument("--raw-root", default=None,
                         help="Explicit path to KITTI raw sequence images")
+    parser.add_argument("--drive-save-dir", default=None,
+                        help="Google Drive directory to synchronise checkpoints to")
     parser.add_argument("--eval-only", action="store_true",
                         help="Run validation only on the checkpoint and exit")
     return parser.parse_args()
@@ -719,6 +723,73 @@ def validate_m6(
     return res
 
 
+def save_checkpoint_atomic(ckpt_data: dict, target_path: str | Path) -> Path:
+    """
+    Save checkpoint atomically:
+      1. Write to target_path.tmp
+      2. Flush and fsync
+      3. Atomically rename to target_path
+    """
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f"{target_path.name}.tmp")
+
+    with open(tmp_path, "wb") as f:
+        torch.save(ckpt_data, f)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except (OSError, IOError):
+            pass
+
+    os.replace(tmp_path, target_path)
+    return target_path
+
+
+def sync_file_to_drive(
+    src_path: str | Path,
+    drive_dir: str | Path,
+    logger: TrainingLogger | None = None,
+) -> str | None:
+    """
+    Safely copy/sync a file to Google Drive using atomic write:
+      1. Copy to drive_dest.tmp
+      2. Flush and fsync if practical
+      3. Atomically rename to drive_dest
+      4. Return drive_dest path on success, or None on failure without raising.
+    """
+    if not drive_dir:
+        return None
+    try:
+        src_path = Path(src_path)
+        drive_dir = Path(drive_dir)
+        drive_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_path = drive_dir / src_path.name
+        tmp_dest = drive_dir / f"{src_path.name}.tmp"
+
+        shutil.copyfile(src_path, tmp_dest)
+
+        try:
+            with open(tmp_dest, "a+b") as f:
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, IOError):
+            pass
+
+        os.replace(tmp_dest, dest_path)
+        if logger:
+            logger.info(f"  ☁️ Drive sync complete: {dest_path}")
+        return str(dest_path)
+    except Exception as e:
+        msg = f"Drive synchronisation failed for {src_path} -> {drive_dir}: {type(e).__name__}: {e}"
+        if logger:
+            logger.error(msg)
+        else:
+            print(f"[ERROR] {msg}", file=sys.stderr)
+        return None
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -969,7 +1040,13 @@ def main():
     best_loss = float("inf")
     best_val_loss = float("inf")
     best_map50 = 0.0
+    global_step = 0
     if args.resume:
+        # If Drive path was supplied for resume and drive_save_dir was not explicitly set, infer it
+        if args.drive_save_dir is None and "drive" in str(args.resume).lower():
+            args.drive_save_dir = str(Path(args.resume).parent)
+            logger.info(f"   Inferred --drive-save-dir from --resume: {args.drive_save_dir}")
+
         ckpt = torch.load(args.resume, map_location=args.device, weights_only=False)
 
         trainer.model.load_state_dict(ckpt["model_state_dict"])
@@ -984,23 +1061,44 @@ def main():
         if not getattr(args, "eval_only", False):
             if "optimizer_state_dict" in ckpt:
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            else:
+                logger.warning("⚠️  'optimizer_state_dict' not found in checkpoint; optimizer initialized freshly.")
+
+            if "scheduler_state_dict" in ckpt:
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            else:
+                logger.warning("⚠️  'scheduler_state_dict' not found in checkpoint; LR schedule will not match previous state.")
+
+            if "scaler_state_dict" in ckpt:
+                scaler.load_state_dict(ckpt["scaler_state_dict"])
+            else:
+                logger.warning("⚠️  'scaler_state_dict' not found in checkpoint; GradScaler initialized freshly.")
 
             start_epoch = ckpt.get("epoch", 0) + 1
             best_loss = ckpt.get("best_loss", float("inf"))
+            best_val_loss = ckpt.get("best_val_loss", float("inf"))
             best_map50 = ckpt.get("best_map50", 0.0)
+            global_step = ckpt.get("global_step", start_epoch * len(loader))
 
             if ema and "ema_state_dict" in ckpt:
                 ema.load_state_dict(ckpt["ema_state_dict"])
 
-            logger.info(
-                f"   Resumed from epoch {start_epoch} "
-                f"(best_loss: {best_loss:.4f}, best_map50: {best_map50:.4f})"
-            )
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.info("   " + "=" * 50)
+            logger.info(f"   Resume checkpoint: {args.resume}")
+            logger.info(f"   Epoch: {ckpt.get('epoch', 0)} (continuing from epoch {start_epoch})")
+            logger.info(f"   Best mAP50: {best_map50:.4f}")
+            logger.info(f"   Best loss: {best_loss:.4f}")
+            logger.info(f"   Global step: {global_step}")
+            logger.info(f"   Current LR: {current_lr:.6e}")
+            logger.info("   " + "=" * 50)
         else:
             if ema and "ema_state_dict" in ckpt:
                 ema.load_state_dict(ckpt["ema_state_dict"])
 
             logger.info("   Loaded checkpoint weights for evaluation-only mode.")
+    else:
+        global_step = start_epoch * len(loader)
 
     # Evaluation only mode
     if getattr(args, "eval_only", False):
@@ -1048,8 +1146,6 @@ def main():
         return
 
     logger.info(f"\n🚀 Training {args.model} for {args.epochs} epochs...")
-
-    global_step = start_epoch * len(loader)
 
     for epoch in range(start_epoch, args.epochs):
         trainer.backbone.train()
@@ -1236,20 +1332,41 @@ def main():
         # ============================================================
         if val_metrics is not None:
             for key, value in val_metrics.items():
-                if isinstance(value, (int, float)):
-                    epoch_log[key] = float(value)
+                if key != "diagnostics":
+                    if isinstance(value, (int, float)):
+                        epoch_log[key] = float(value)
+                    elif value is None:
+                        epoch_log[key] = None
 
             # M1 diagnostics are nested inside val_metrics.
             if args.model == "m1":
                 diagnostics = val_metrics.get("diagnostics", {})
-
-                for key, value in diagnostics.items():
-                    if isinstance(value, (int, float)):
-                        epoch_log[f"diagnostics_{key}"] = float(value)
+                for diag_k in [
+                    "gt_count", "raw_preds", "after_conf", "after_nms",
+                    "raw_score_min", "raw_score_mean", "raw_score_max",
+                    "conf_score_min", "conf_score_mean", "conf_score_max",
+                    "raw_box_bounds", "kept_box_bounds",
+                ]:
+                    val = diagnostics.get(diag_k, None)
+                    epoch_log[diag_k] = val
+                    epoch_log[f"diagnostics_{diag_k}"] = val
 
                 epoch_log["validation_images"] = int(val_images_limit or 0)
+        else:
+            if args.model == "m1":
+                for diag_k in [
+                    "gt_count", "raw_preds", "after_conf", "after_nms",
+                    "raw_score_min", "raw_score_mean", "raw_score_max",
+                    "conf_score_min", "conf_score_mean", "conf_score_max",
+                    "raw_box_bounds", "kept_box_bounds",
+                ]:
+                    epoch_log[diag_k] = None
+                    epoch_log[f"diagnostics_{diag_k}"] = None
+                epoch_log["validation_images"] = None
 
-        logger.log_epoch(epoch, epoch_log)
+        # Track lowest-loss checkpoint state
+        is_best_loss = loss_meter.avg < best_loss
+        best_loss = min(best_loss, loss_meter.avg)
 
         # Base checkpoint dictionary
         ckpt_data = {
@@ -1259,42 +1376,69 @@ def main():
             "backbone_state_dict": trainer.backbone.state_dict(),
             "fpn_state_dict": trainer.fpn.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
-            "avg_loss": loss_meter.avg,
-            "best_loss": best_loss,
-            "best_val_loss": best_val_loss,
-            "best_map50": best_map50,
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
+            "avg_loss": float(loss_meter.avg),
+            "best_loss": float(best_loss),
+            "best_val_loss": float(best_val_loss),
+            "best_map50": float(best_map50),
+            "global_step": int(global_step),
+            "args": vars(args),
         }
         if val_metrics is not None:
             ckpt_data["val_metrics"] = val_metrics
         if ema:
             ckpt_data["ema_state_dict"] = ema.state_dict()
 
-        # Save best validation checkpoints
+        # 1. Save epoch checkpoint after EVERY completed epoch
+        epoch_ckpt_name = f"{args.model}_epoch{epoch:03d}.pt"
+        epoch_ckpt_path = Path(args.save_dir) / epoch_ckpt_name
+        save_checkpoint_atomic(ckpt_data, epoch_ckpt_path)
+        logger.info(f"  💾 Saved checkpoint: {epoch_ckpt_path}")
+
+        drive_epoch_path = None
+        if args.drive_save_dir:
+            drive_epoch_path = sync_file_to_drive(epoch_ckpt_path, args.drive_save_dir, logger=logger)
+
+        # 2. Update latest checkpoint atomically
+        latest_ckpt_path = Path(args.save_dir) / f"{args.model}_latest.pt"
+        save_checkpoint_atomic(ckpt_data, latest_ckpt_path)
+        if args.drive_save_dir:
+            sync_file_to_drive(latest_ckpt_path, args.drive_save_dir, logger=logger)
+
+        # 3. Save best validation mAP@50 checkpoint if applicable
         if is_best_map50:
-            best_map_path = os.path.join(args.save_dir, f"{args.model}_best_map50.pt")
-            torch.save(ckpt_data, best_map_path)
+            best_map_path = Path(args.save_dir) / f"{args.model}_best_map50.pt"
+            save_checkpoint_atomic(ckpt_data, best_map_path)
             logger.info(f"  🏆 New best validation mAP@50 ({best_map50:.4f}): {best_map_path}")
+            if args.drive_save_dir:
+                sync_file_to_drive(best_map_path, args.drive_save_dir, logger=logger)
+
+        # 4. Save best validation loss checkpoint if applicable
         if is_best_val_loss:
-            best_val_path = os.path.join(args.save_dir, f"{args.model}_best_val.pt")
-            torch.save(ckpt_data, best_val_path)
+            best_val_path = Path(args.save_dir) / f"{args.model}_best_val.pt"
+            save_checkpoint_atomic(ckpt_data, best_val_path)
             logger.info(f"  🏆 New lowest validation loss ({best_val_loss:.4f}): {best_val_path}")
+            if args.drive_save_dir:
+                sync_file_to_drive(best_val_path, args.drive_save_dir, logger=logger)
 
-        # Save periodic or lowest-loss checkpoints
-        is_best_loss = loss_meter.avg < best_loss
-        best_loss = min(best_loss, loss_meter.avg)
+        # 5. Save best training loss checkpoint if applicable
+        if is_best_loss:
+            best_loss_path = Path(args.save_dir) / f"{args.model}_best.pt"
+            save_checkpoint_atomic(ckpt_data, best_loss_path)
+            if args.model == "m1":
+                logger.info(f"  📉 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
+            else:
+                logger.info(f"  🏆 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
+            if args.drive_save_dir:
+                sync_file_to_drive(best_loss_path, args.drive_save_dir, logger=logger)
 
-        if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1 or is_best_loss:
-            path = os.path.join(args.save_dir, f"{args.model}_epoch{epoch}.pt")
-            torch.save(ckpt_data, path)
-            logger.info(f"  💾 Saved: {path}")
-
-            if is_best_loss:
-                best_loss_path = os.path.join(args.save_dir, f"{args.model}_best.pt")
-                torch.save(ckpt_data, best_loss_path)
-                if args.model == "m1":
-                    logger.info(f"  📉 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
-                else:
-                    logger.info(f"  🏆 New lowest training loss checkpoint ({best_loss:.4f}): {best_loss_path}")
+        # 6. Record checkpoint paths and commit epoch record to JSONL
+        epoch_log["checkpoint_path"] = str(epoch_ckpt_path)
+        epoch_log["drive_checkpoint_path"] = drive_epoch_path
+        epoch_log["best_map50"] = float(best_map50)
+        epoch_log["best_loss"] = float(best_loss)
+        logger.log_epoch(epoch, epoch_log)
 
     logger.flush()
     logger.close()
