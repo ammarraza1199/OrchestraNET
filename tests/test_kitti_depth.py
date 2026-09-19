@@ -330,6 +330,30 @@ def test_depth_metrics_evaluation():
     assert np.isfinite(res["SILog"])
 
 
+def test_depth_metrics_tensor_batched_evaluation():
+    """Test DepthMetrics with torch.Tensor inputs across a batch of images."""
+    metrics = DepthMetrics(min_depth=0.001, max_depth=80.0)
+
+    # Batch of 2 images (1, 40, 40)
+    pred_tensor = torch.full((2, 1, 40, 40), 20.0)
+    gt_tensor = torch.zeros((2, 1, 40, 40))
+    # Make top half valid depth (25.0), bottom half 0 (invalid)
+    gt_tensor[:, :, :20, :] = 25.0
+
+    for b in range(2):
+        metrics.update(pred_tensor[b, 0], gt_tensor[b, 0])
+
+    res = metrics.compute()
+    assert res["n_images"] == 2
+    # 2 images * 20 * 40 = 1600 valid pixels
+    assert res["n_valid_pixels"] == 1600
+    # AbsRel: |25 - 20| / 25 = 5/25 = 0.2
+    assert pytest.approx(res["AbsRel"], abs=1e-3) == 0.2
+    assert np.isfinite(res["RMSE"])
+    assert np.isfinite(res["SILog"])
+
+
+
 def test_m4_full_pipeline_batch_size_2():
     """Test full pipeline integration: batch of 2 images -> Backbone -> FPN -> M4."""
     backbone = MobileNetV4Backbone(pretrained=False)

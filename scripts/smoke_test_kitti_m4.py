@@ -10,6 +10,7 @@ Default dataset path: /content/data/KITTI/extracted
 
 import argparse
 import sys
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -256,20 +257,39 @@ def main():
             eval_outputs = model(fpn_features)
             eval_pred = eval_outputs["depth_map"] * 80.0
             eval_gt = batch_targets["depth_meters"]
-            eval_mask = batch_targets["valid_mask"]
+
+            # Interpolate prediction to match GT spatial dimensions
+            if eval_pred.shape[-2:] != eval_gt.shape[-2:]:
+                eval_pred = torch.nn.functional.interpolate(
+                    eval_pred, size=eval_gt.shape[-2:],
+                    mode="bilinear", align_corners=False
+                )
+
+            print("\nDepth Units Check:")
+            print(f"  normalized GT min: {float(batch_targets['depth_gt'].min().item()):.4f}, max: {float(batch_targets['depth_gt'].max().item()):.4f}")
+            print(f"  metric GT min: {float(batch_targets['depth_meters'].min().item()):.4f}m, max: {float(batch_targets['depth_meters'].max().item()):.4f}m")
+            print(f"  prediction min: {float(eval_pred.min().item()):.4f}m, max: {float(eval_pred.max().item()):.4f}m")
 
             evaluator = DepthMetrics(max_depth=80.0, min_depth=1e-3)
-            evaluator.update(eval_pred, eval_gt, mask=eval_mask)
+            for b in range(batch_size):
+                evaluator.update(eval_pred[b, 0], eval_gt[b, 0])
             results = evaluator.compute()
 
             for metric_name, val in results.items():
-                if torch.isnan(torch.tensor(val)) or torch.isinf(torch.tensor(val)):
-                    raise ValueError(f"Metric '{metric_name}' is NaN or Inf: {val}")
+                if isinstance(val, (int, float)):
+                    if np.isnan(val) or np.isinf(val):
+                        raise ValueError(f"Metric '{metric_name}' is NaN or Inf: {val}")
 
-            print("metrics: PASS")
+            print("\nmetrics: PASS")
             print("\nExplicit Metrics:")
-            for metric_name, val in results.items():
-                print(f"  {metric_name}: {val:.4f}")
+            for metric_name in ["AbsRel", "SqRel", "RMSE", "RMSElog", "SILog", "log10", "d1", "d2", "d3"]:
+                val = results.get(metric_name)
+                if isinstance(val, (int, float)):
+                    print(f"  {metric_name}: {val:.4f}")
+                else:
+                    print(f"  {metric_name}: {val}")
+            print(f"  n_images: {results.get('n_images')}")
+            print(f"  n_valid_pixels: {results.get('n_valid_pixels')}")
             metrics_pass = True
     except Exception as e:
         print(f"metrics: FAIL: {type(e).__name__}: {e}")
