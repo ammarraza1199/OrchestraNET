@@ -989,6 +989,11 @@ def main():
 
     # Optimizer
     trainable_params = [p for p in trainer.all_params if p.requires_grad]
+    named_trainable_params = []
+    for prefix, module in [("backbone", trainer.backbone), ("fpn", trainer.fpn), ("model", trainer.model)]:
+        for name, p in module.named_parameters():
+            if p.requires_grad:
+                named_trainable_params.append((f"{prefix}.{name}", p))
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
 
     # Scheduler with warmup
@@ -1162,9 +1167,61 @@ def main():
             with torch.amp.autocast("cuda", enabled=(args.device == "cuda")):
                 losses = trainer.train_step(images, targets)
 
-            scaler.scale(losses["total_loss"]).backward()
+            # Check total_loss with torch.isfinite() before backward
+            total_loss = losses["total_loss"]
+            if not torch.isfinite(total_loss):
+                current_lr = optimizer.param_groups[0]["lr"]
+                loss_comp_str = " | ".join(
+                    f"{k}: {v.item() if isinstance(v, torch.Tensor) else v:.4f}"
+                    for k, v in losses.items()
+                )
+                logger.error(
+                    f"\n{'!'*70}\n"
+                    f"❌ NON-FINITE LOSS DETECTED at Epoch {epoch}, Batch {batch_idx}/{len(loader)}\n"
+                    f"   LR: {current_lr:.6e}\n"
+                    f"   Losses: {loss_comp_str}\n"
+                    f"{'!'*70}\n"
+                )
+                raise RuntimeError(
+                    f"Non-finite total_loss ({total_loss.item()}) at epoch {epoch}, batch {batch_idx}. "
+                    f"Stopping training to prevent parameter corruption."
+                )
+
+            scaler.scale(total_loss).backward()
             scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(trainable_params, 10.0)
+
+            # Check all gradients for finite values before clipping
+            grads_finite = True
+            first_bad_grad = None
+            for name, p in named_trainable_params:
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    grads_finite = False
+                    first_bad_grad = name
+                    break
+
+            if not grads_finite:
+                current_lr = optimizer.param_groups[0]["lr"]
+                loss_comp_str = " | ".join(
+                    f"{k}: {v.item() if isinstance(v, torch.Tensor) else v:.4f}"
+                    for k, v in losses.items()
+                )
+                logger.error(
+                    f"\n{'!'*70}\n"
+                    f"⚠️  NON-FINITE GRADIENT DETECTED at Epoch {epoch}, Batch {batch_idx}/{len(loader)}\n"
+                    f"   First offending parameter: {first_bad_grad}\n"
+                    f"   LR: {current_lr:.6e}\n"
+                    f"   Losses: {loss_comp_str}\n"
+                    f"   Skipping optimizer.step() to protect model parameters.\n"
+                    f"{'!'*70}\n"
+                )
+                optimizer.zero_grad()
+                scaler.update()
+                continue
+
+            try:
+                nn.utils.clip_grad_norm_(trainable_params, 10.0, error_if_nonfinite=True)
+            except TypeError:
+                nn.utils.clip_grad_norm_(trainable_params, 10.0)
 
             # Ensure optimizer.step() occurs before scheduler.step()
             scale_before = scaler.get_scale()
@@ -1174,6 +1231,14 @@ def main():
             # Only advance scheduler if optimizer was actually stepped (not skipped by scaler)
             if not (args.device == "cuda" and scale_after < scale_before):
                 scheduler.step()
+
+            # Lightweight finite-parameter check after optimizer.step()
+            for name, p in named_trainable_params:
+                if not torch.isfinite(p).all():
+                    raise RuntimeError(
+                        f"Non-finite parameter detected in '{name}' after optimizer.step() "
+                        f"at epoch {epoch}, batch {batch_idx}. Halting training."
+                    )
 
             # Update EMA
             if ema:
@@ -1389,6 +1454,42 @@ def main():
             ckpt_data["val_metrics"] = val_metrics
         if ema:
             ckpt_data["ema_state_dict"] = ema.state_dict()
+
+        # Checkpoint protection: verify model parameters and optimizer state are finite
+        def _check_dict_finite(d: dict, prefix: str):
+            for k, v in d.items():
+                if isinstance(v, torch.Tensor):
+                    if not torch.isfinite(v).all():
+                        return f"{prefix}['{k}']"
+                elif isinstance(v, dict):
+                    res = _check_dict_finite(v, f"{prefix}['{k}']")
+                    if res is not None:
+                        return res
+            return None
+
+        bad_tensor_source = None
+        for name, state in [
+            ("model_state_dict", trainer.model.state_dict()),
+            ("backbone_state_dict", trainer.backbone.state_dict()),
+            ("fpn_state_dict", trainer.fpn.state_dict()),
+            ("optimizer_state_dict", optimizer.state_dict()),
+        ]:
+            bad_tensor_source = _check_dict_finite(state, name)
+            if bad_tensor_source is not None:
+                break
+
+        if bad_tensor_source is not None or not np.isfinite(loss_meter.avg):
+            logger.error(
+                f"\n{'!'*70}\n"
+                f"❌ REFUSING TO SAVE CHECKPOINT at Epoch {epoch}!\n"
+                f"   Non-finite values detected in: {bad_tensor_source or 'loss_meter.avg'}\n"
+                f"   Preserving previous healthy checkpoints without overwriting.\n"
+                f"{'!'*70}\n"
+            )
+            raise RuntimeError(
+                f"Refusing to save checkpoint with non-finite values ({bad_tensor_source or 'loss_meter.avg'}) "
+                f"at epoch {epoch}."
+            )
 
         # 1. Save epoch checkpoint after EVERY completed epoch
         epoch_ckpt_name = f"{args.model}_epoch{epoch:03d}.pt"

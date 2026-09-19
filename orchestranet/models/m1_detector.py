@@ -61,52 +61,59 @@ class DetectionHead(nn.Module):
 
 def box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     """
-    Compute IoU between two sets of boxes (xyxy format).
+    Compute IoU between two sets of boxes (xyxy format) in FP32.
     Args:
         boxes1: (N, 4), boxes2: (M, 4)
     Returns:
         (N, M) IoU matrix
     """
-    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(0)
-    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(0)
+    with torch.amp.autocast("cuda", enabled=False):
+        b1 = boxes1.float()
+        b2 = boxes2.float()
+        area1 = (b1[:, 2] - b1[:, 0]).clamp(min=0) * (b1[:, 3] - b1[:, 1]).clamp(min=0)
+        area2 = (b2[:, 2] - b2[:, 0]).clamp(min=0) * (b2[:, 3] - b2[:, 1]).clamp(min=0)
 
-    inter_x1 = torch.max(boxes1[:, None, 0], boxes2[None, :, 0])
-    inter_y1 = torch.max(boxes1[:, None, 1], boxes2[None, :, 1])
-    inter_x2 = torch.min(boxes1[:, None, 2], boxes2[None, :, 2])
-    inter_y2 = torch.min(boxes1[:, None, 3], boxes2[None, :, 3])
+        inter_x1 = torch.max(b1[:, None, 0], b2[None, :, 0])
+        inter_y1 = torch.max(b1[:, None, 1], b2[None, :, 1])
+        inter_x2 = torch.min(b1[:, None, 2], b2[None, :, 2])
+        inter_y2 = torch.min(b1[:, None, 3], b2[None, :, 3])
 
-    inter = (inter_x2 - inter_x1).clamp(0) * (inter_y2 - inter_y1).clamp(0)
-    union = area1[:, None] + area2[None, :] - inter
-    return inter / (union + 1e-7)
+        inter = (inter_x2 - inter_x1).clamp(min=0) * (inter_y2 - inter_y1).clamp(min=0)
+        union = area1[:, None] + area2[None, :] - inter
+        return inter / (union + 1e-7)
 
 
 def generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     """
-    Compute Generalized IoU between two sets of boxes (xyxy format).
+    Compute Generalized IoU between two sets of boxes (xyxy format) in FP32.
     Returns (N,) GIoU values for paired boxes (boxes1[i] vs boxes2[i]).
     """
-    x1 = torch.max(boxes1[:, 0], boxes2[:, 0])
-    y1 = torch.max(boxes1[:, 1], boxes2[:, 1])
-    x2 = torch.min(boxes1[:, 2], boxes2[:, 2])
-    y2 = torch.min(boxes1[:, 3], boxes2[:, 3])
+    with torch.amp.autocast("cuda", enabled=False):
+        b1 = boxes1.float()
+        b2 = boxes2.float()
 
-    inter = (x2 - x1).clamp(0) * (y2 - y1).clamp(0)
+        x1 = torch.max(b1[:, 0], b2[:, 0])
+        y1 = torch.max(b1[:, 1], b2[:, 1])
+        x2 = torch.min(b1[:, 2], b2[:, 2])
+        y2 = torch.min(b1[:, 3], b2[:, 3])
 
-    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(0)
-    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(0)
-    union = area1 + area2 - inter
+        inter = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
 
-    iou = inter / (union + 1e-7)
+        area1 = (b1[:, 2] - b1[:, 0]).clamp(min=0) * (b1[:, 3] - b1[:, 1]).clamp(min=0)
+        area2 = (b2[:, 2] - b2[:, 0]).clamp(min=0) * (b2[:, 3] - b2[:, 1]).clamp(min=0)
+        union = area1 + area2 - inter
 
-    # Enclosing box
-    enc_x1 = torch.min(boxes1[:, 0], boxes2[:, 0])
-    enc_y1 = torch.min(boxes1[:, 1], boxes2[:, 1])
-    enc_x2 = torch.max(boxes1[:, 2], boxes2[:, 2])
-    enc_y2 = torch.max(boxes1[:, 3], boxes2[:, 3])
-    enc_area = (enc_x2 - enc_x1).clamp(0) * (enc_y2 - enc_y1).clamp(0)
+        iou = inter / (union + 1e-7)
 
-    giou = iou - (enc_area - union) / (enc_area + 1e-7)
-    return giou
+        # Enclosing box
+        enc_x1 = torch.min(b1[:, 0], b2[:, 0])
+        enc_y1 = torch.min(b1[:, 1], b2[:, 1])
+        enc_x2 = torch.max(b1[:, 2], b2[:, 2])
+        enc_y2 = torch.max(b1[:, 3], b2[:, 3])
+        enc_area = (enc_x2 - enc_x1).clamp(min=0) * (enc_y2 - enc_y1).clamp(min=0)
+
+        giou = iou - (enc_area - union) / (enc_area + 1e-7)
+        return giou
 
 
 def focal_loss(
@@ -212,17 +219,19 @@ class M1PrimaryDetector(BaseMicroModel):
         }
 
     def _decode_boxes(self, bbox_pred, level_idx, H, W, device):
-        stride = 640 // H
-        gy, gx = torch.meshgrid(
-            torch.arange(H, device=device, dtype=torch.float32),
-            torch.arange(W, device=device, dtype=torch.float32), indexing="ij")
-        anchors = getattr(self, f"anchors_{level_idx}").to(device)
-        tx, ty, tw, th = bbox_pred.split(1, dim=2)
-        bx = (2 * torch.sigmoid(tx) - 0.5 + gx) * stride
-        by = (2 * torch.sigmoid(ty) - 0.5 + gy) * stride
-        bw = (2 * torch.sigmoid(tw)) ** 2 * anchors[:, 0].view(1, -1, 1, 1, 1)
-        bh = (2 * torch.sigmoid(th)) ** 2 * anchors[:, 1].view(1, -1, 1, 1, 1)
-        return torch.cat([bx - bw/2, by - bh/2, bx + bw/2, by + bh/2], dim=2)
+        with torch.amp.autocast("cuda", enabled=False):
+            bbox_pred_fp32 = bbox_pred.float()
+            stride = 640 // H
+            gy, gx = torch.meshgrid(
+                torch.arange(H, device=device, dtype=torch.float32),
+                torch.arange(W, device=device, dtype=torch.float32), indexing="ij")
+            anchors = getattr(self, f"anchors_{level_idx}").to(device=device, dtype=torch.float32)
+            tx, ty, tw, th = bbox_pred_fp32.split(1, dim=2)
+            bx = (2 * torch.sigmoid(tx) - 0.5 + gx) * stride
+            by = (2 * torch.sigmoid(ty) - 0.5 + gy) * stride
+            bw = (2 * torch.sigmoid(tw)) ** 2 * anchors[:, 0].view(1, -1, 1, 1, 1)
+            bh = (2 * torch.sigmoid(th)) ** 2 * anchors[:, 1].view(1, -1, 1, 1, 1)
+            return torch.cat([bx - bw/2, by - bh/2, bx + bw/2, by + bh/2], dim=2)
 
     def get_loss(self, predictions, targets):
         """
@@ -267,10 +276,10 @@ class M1PrimaryDetector(BaseMicroModel):
 
                 continue
 
-            gt_boxes_valid = gt_boxes[:n_gt].to(device)   # (n_gt, 4)
+            gt_boxes_valid = gt_boxes[:n_gt].to(device=device, dtype=torch.float32)   # (n_gt, 4)
             gt_labels_valid = gt_labels[:n_gt].to(device)  # (n_gt,)
 
-            b_pred_boxes = pred_boxes[b]  # (N_pred, 4)
+            b_pred_boxes = pred_boxes[b].float()  # (N_pred, 4)
             b_pred_obj = pred_obj[b, :, 0]  # (N_pred,)
             b_pred_cls = pred_cls[b]       # (N_pred, C)
 
@@ -281,7 +290,7 @@ class M1PrimaryDetector(BaseMicroModel):
 
                 # Cost = -IoU + cls cost (vectorized extraction of relevant class logits)
                 labels_clamped = gt_labels_valid.long().clamp(0, self.num_classes - 1)
-                cls_cost = -torch.sigmoid(b_pred_cls[:, labels_clamped].detach())
+                cls_cost = -torch.sigmoid(b_pred_cls[:, labels_clamped].detach().float())
 
                 cost_matrix = -cost_iou + 0.5 * cls_cost  # (N_pred, n_gt)
 
@@ -319,9 +328,14 @@ class M1PrimaryDetector(BaseMicroModel):
             gt_idx = torch.tensor(matched_gt_indices, dtype=torch.long, device=device)
 
             # === Bbox Loss (GIoU) ===
-            matched_pred_boxes = b_pred_boxes[pred_idx]    # (n_matched, 4)
-            matched_gt_boxes = gt_boxes_valid[gt_idx]      # (n_matched, 4)
+            matched_pred_boxes = b_pred_boxes[pred_idx].float()    # (n_matched, 4)
+            matched_gt_boxes = gt_boxes_valid[gt_idx].float()      # (n_matched, 4)
             giou = generalized_box_iou(matched_pred_boxes, matched_gt_boxes)
+            if not torch.isfinite(giou).all():
+                raise RuntimeError(
+                    f"Non-finite GIoU detected during M1 loss computation: "
+                    f"giou={giou}, matched_pred_boxes={matched_pred_boxes}, matched_gt_boxes={matched_gt_boxes}"
+                )
             bbox_loss = (1.0 - giou).mean()
             total_bbox_loss = total_bbox_loss + bbox_loss
 
@@ -338,7 +352,11 @@ class M1PrimaryDetector(BaseMicroModel):
             # gradients are not diluted by N_pred (100k or 25k).
             with torch.amp.autocast("cuda", enabled=False):
                 obj_pred = b_pred_obj.float()
-                pos_target = giou.detach().float().clamp(0, 1)
+                pos_target = giou.detach().clamp(0, 1)
+                if not torch.isfinite(pos_target).all():
+                    raise RuntimeError(
+                        f"Non-finite pos_target detected in M1 objectness loss: pos_target={pos_target}"
+                    )
                 pos_loss = F.binary_cross_entropy_with_logits(
                     obj_pred[pred_idx],
                     pos_target,
