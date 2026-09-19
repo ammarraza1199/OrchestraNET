@@ -87,9 +87,24 @@ class M4DepthEstimator(BaseMicroModel):
                 targets["depth_gt"], size=pred.shape[2:],
                 mode="bilinear", align_corners=False
             )
-            # Scale-invariant log loss
-            diff = torch.log(pred + 1e-6) - torch.log(gt + 1e-6)
-            si_loss = (diff ** 2).mean() - 0.5 * (diff.mean() ** 2)
+
+            # Valid mask: exclude zero/unmeasured depth and non-finite values
+            valid_mask = (gt > 1e-3) & torch.isfinite(gt)
+            if "valid_mask" in targets:
+                mask_interp = F.interpolate(
+                    targets["valid_mask"].float(), size=pred.shape[2:],
+                    mode="nearest"
+                ) > 0.5
+                valid_mask = valid_mask & mask_interp
+
+            if valid_mask.any():
+                pred_valid = pred[valid_mask]
+                gt_valid = gt[valid_mask]
+                # Scale-invariant log loss computed strictly over valid pixels
+                diff = torch.log(pred_valid + 1e-6) - torch.log(gt_valid + 1e-6)
+                si_loss = (diff ** 2).mean() - 0.5 * (diff.mean() ** 2)
+            else:
+                si_loss = torch.tensor(0.0, device=device)
 
             # Edge-aware weighting: reduce smoothness penalty at GT edges
             gt_grad_x = torch.abs(gt[:, :, :, :-1] - gt[:, :, :, 1:])

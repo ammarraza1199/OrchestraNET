@@ -49,6 +49,8 @@ from orchestranet.utils.config import Config
 from orchestranet.utils.ema import ModelEMA
 from orchestranet.utils.logger import TrainingLogger, AverageMeter
 from orchestranet.utils.metrics import DetectionMetrics, compute_amodal_metrics
+from orchestranet.evaluation.depth_metrics import DepthMetrics
+from orchestranet.data.kitti_depth_dataset import KITTIDepthDataset
 
 
 MODEL_REGISTRY = {
@@ -90,6 +92,10 @@ def parse_args():
                         help="Path to validation images directory (defaults to <data-root>/val2017)")
     parser.add_argument("--val-ann-file", default=None,
                         help="Path to validation annotations JSON (defaults to <data-root>/annotations/instances_val2017.json)")
+    parser.add_argument("--dataset", default=None,
+                        help="Explicit dataset name override (e.g., kitti, kins, coco)")
+    parser.add_argument("--raw-root", default=None,
+                        help="Explicit path to KITTI raw sequence images")
     parser.add_argument("--eval-only", action="store_true",
                         help="Run validation only on the checkpoint and exit")
     return parser.parse_args()
@@ -419,6 +425,84 @@ def validate_loss(
     return res
 
 
+@torch.no_grad()
+def validate_m4(
+    trainer: IndividualTrainer,
+    val_loader: DataLoader,
+    device: str,
+    num_images: int | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate validation loss and canonical depth metrics for M4:
+      - val_loss, val_depth_loss, val_smoothness_loss
+      - AbsRel, SqRel, RMSE, RMSElog, SILog, log10, d1, d2, d3
+    """
+    trainer.backbone.eval()
+    trainer.fpn.eval()
+    trainer.model.eval()
+
+    total_loss_sum = 0.0
+    comp_sums = defaultdict(float)
+    count = 0
+    depth_metrics = DepthMetrics(min_depth=0.001, max_depth=80.0)
+
+    for images, targets in val_loader:
+        if num_images is not None and count >= num_images:
+            break
+
+        B = images.shape[0]
+        images = images.to(device, non_blocking=True)
+        targets_device = {
+            k: v.to(device, non_blocking=True) if (isinstance(v, torch.Tensor) and k != "num_objects") else v
+            for k, v in targets.items()
+        }
+
+        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+            backbone_features = trainer.backbone(images)
+            fpn_features = trainer.fpn(backbone_features)
+            predictions = trainer.model(fpn_features)
+            losses = trainer.model.get_loss(predictions, targets_device)
+
+        total_loss_sum += losses["total_loss"].item() * B
+        for k, v in losses.items():
+            if isinstance(v, torch.Tensor) and k != "total_loss":
+                comp_sums[k] += v.item() * B
+
+        # Compute depth metrics against metric ground truth
+        if "depth_gt" in targets:
+            pred_map = predictions["depth_map"]
+            # Convert normalized pred to meters [0, 80.0]
+            pred_meters = pred_map * 80.0
+            if "depth_meters" in targets:
+                gt_meters = targets["depth_meters"]
+            else:
+                gt_meters = targets["depth_gt"] * 80.0
+
+            if pred_meters.shape[-2:] != gt_meters.shape[-2:]:
+                pred_meters = F.interpolate(
+                    pred_meters, size=gt_meters.shape[-2:],
+                    mode="bilinear", align_corners=False
+                )
+
+            for b in range(B):
+                depth_metrics.update(pred_meters[b, 0], gt_meters[b, 0])
+
+        count += B
+
+    avg_total = total_loss_sum / max(1, count)
+    res = {"val_loss": avg_total}
+    for k, v in comp_sums.items():
+        res[f"val_{k}"] = v / max(1, count)
+
+    metrics_dict = depth_metrics.compute()
+    for m_k in ["AbsRel", "SqRel", "RMSE", "RMSElog", "SILog", "log10", "d1", "d2", "d3"]:
+        v = metrics_dict.get(m_k)
+        if isinstance(v, (int, float)):
+            res[f"val_{m_k}"] = float(v)
+
+    return res
+
+
 def _check_finiteness(
     tensor: torch.Tensor,
     name: str,
@@ -648,8 +732,15 @@ def main():
     log_dir = os.path.join(args.log_dir, args.model)
     logger = TrainingLogger(log_dir=log_dir, tb_enabled=True)
 
-    is_kins = "kins" in args.data_root.lower()
-    dataset_name = "KINS" if is_kins else info["dataset"]
+    is_kins = (args.dataset == "kins") or ("kins" in args.data_root.lower())
+    is_kitti = (args.dataset == "kitti") or (args.model == "m4" and "kitti" in args.data_root.lower())
+
+    if is_kitti:
+        dataset_name = "KITTI"
+    elif is_kins:
+        dataset_name = "KINS"
+    else:
+        dataset_name = info["dataset"]
 
     logger.info("🎼 OrchestraNet — Individual Model Training")
     logger.info("=" * 60)
@@ -677,7 +768,25 @@ def main():
     # Dataset
     occ_aug = SyntheticOcclusionGenerator() if args.model == "m2" else None
     train_transforms = get_train_transforms(img_size=640)
-    if is_kins:
+    if is_kitti:
+        dataset = KITTIDepthDataset(
+            root=args.data_root,
+            split="train",
+            img_size=640,
+            raw_root=args.raw_root,
+            transforms=train_transforms,
+        )
+        if len(dataset) == 0:
+            logger.error(
+                "\n" + "!" * 70 + "\n"
+                "❌ No KITTI training RGB/depth pairs found.\n"
+                f"Scanned: {args.data_root}/train/*/proj_depth/groundtruth/\n"
+                "The KITTI depth benchmark contains depth files, but raw RGB sequence images\n"
+                "must be downloaded/extracted separately (or specified via --raw-root).\n"
+                "!" * 70 + "\n"
+            )
+            sys.exit(1)
+    elif is_kins:
         train_ann_candidates = [
             os.path.join(args.data_root, "update_train_2020.json"),
             os.path.join(args.data_root, "annotations", "update_train_2020.json"),
@@ -690,11 +799,6 @@ def main():
             args.data_root,
         ]
         root_path = next((p for p in train_root_candidates if os.path.exists(p)), train_root_candidates[0])
-    else:
-        root_path = os.path.join(args.data_root, "train2017")
-        ann_path = os.path.join(args.data_root, "annotations/instances_train2017.json")
-
-    if is_kins:
         from orchestranet.data.kins_dataset import KINSAmodalDataset
         dataset = KINSAmodalDataset(
             root=root_path,
@@ -702,6 +806,8 @@ def main():
             transforms=train_transforms,
         )
     else:
+        root_path = os.path.join(args.data_root, "train2017")
+        ann_path = os.path.join(args.data_root, "annotations/instances_train2017.json")
         dataset = COCODetectionDataset(
             root=root_path,
             ann_file=ann_path,
@@ -750,7 +856,33 @@ def main():
     val_ann = args.val_ann_file if args.val_ann_file else default_val_ann
     val_transforms = get_val_transforms(img_size=640)
 
-    if os.path.exists(val_root) and os.path.exists(val_ann):
+    if is_kitti:
+        val_dataset = KITTIDepthDataset(
+            root=args.data_root,
+            split="val",
+            img_size=640,
+            transforms=val_transforms,
+        )
+        if len(val_dataset) == 0:
+            logger.warning(
+                f"⚠️  No KITTI validation pairs found in {args.data_root}. "
+                "Validation will be skipped."
+            )
+        else:
+            val_loader_kwargs = {
+                "batch_size": args.batch_size,
+                "shuffle": False,
+                "num_workers": args.num_workers,
+                "pin_memory": True,
+            }
+            if args.num_workers > 0:
+                val_loader_kwargs["persistent_workers"] = True
+                val_loader_kwargs["prefetch_factor"] = 2
+            val_loader = DataLoader(val_dataset, **val_loader_kwargs)
+            logger.info(f"   Validation: {len(val_dataset)} images from {args.data_root}")
+            if val_images_limit:
+                logger.info(f"   Validation image cap: {val_images_limit}")
+    elif os.path.exists(val_root) and os.path.exists(val_ann):
         if is_kins:
             from orchestranet.data.kins_dataset import KINSAmodalDataset
             val_dataset = KINSAmodalDataset(
@@ -887,6 +1019,13 @@ def main():
             )
         elif args.model == "m6":
             val_metrics = validate_m6(
+                trainer,
+                val_loader,
+                device=args.device,
+                num_images=val_images_limit,
+            )
+        elif args.model == "m4":
+            val_metrics = validate_m4(
                 trainer,
                 val_loader,
                 device=args.device,
@@ -1046,6 +1185,24 @@ def main():
                     f"{k}: {v:.4f}" for k, v in val_metrics.items()
                 )
                 logger.info(f"  📊 Val M6 | {loss_comp_str}")
+                for m_k, m_v in val_metrics.items():
+                    logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
+
+                if val_metrics["val_loss"] < best_val_loss:
+                    best_val_loss = val_metrics["val_loss"]
+                    is_best_val_loss = True
+            elif args.model == "m4":
+                logger.info(f"  🔍 Validating M4 on validation set...")
+                val_metrics = validate_m4(
+                    trainer,
+                    val_loader,
+                    device=args.device,
+                    num_images=val_images_limit,
+                )
+                loss_comp_str = " | ".join(
+                    f"{k}: {v:.4f}" for k, v in val_metrics.items()
+                )
+                logger.info(f"  📊 Val M4 | {loss_comp_str}")
                 for m_k, m_v in val_metrics.items():
                     logger.log_scalar(f"val/{args.model}/{m_k}", m_v, epoch)
 
