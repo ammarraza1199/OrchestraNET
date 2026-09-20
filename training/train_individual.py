@@ -1033,7 +1033,11 @@ def main():
         )
 
     # Mixed precision
-    scaler = torch.amp.GradScaler("cuda", enabled=(args.device == "cuda"))
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=(args.device == "cuda"),
+        init_scale=1024.0,
+    )
 
     # EMA
     ema = None

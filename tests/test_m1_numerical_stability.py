@@ -177,3 +177,67 @@ def test_checkpoint_protection_against_nan_parameters(tmp_path: Path):
     bad = _check_dict_finite(trainer.model.state_dict(), "model_state_dict")
     assert bad is not None
     assert "model_state_dict" in bad
+
+
+def test_focal_loss_reduction_is_mean_across_classes():
+    """Verify focal loss is finite and reduction is mean across classes."""
+    from orchestranet.models.m1_detector import focal_loss
+
+    torch.manual_seed(42)
+    logits = torch.randn(10, 80, requires_grad=True)
+    targets = torch.randint(0, 80, (10,))
+
+    loss = focal_loss(logits, targets)
+    assert loss.dtype == torch.float32
+    assert torch.isfinite(loss).all()
+    # Loss should be normalized across classes (~0.1 - 0.5), not summed across 80 classes (~10 - 20)
+    assert loss.item() < 2.0
+
+    loss.backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+    # Gradient norm should be bounded
+    assert logits.grad.norm().item() < 10.0
+
+
+def test_m1_loss_and_conv_stem_gradients_finite_under_amp(device):
+    """
+    Verify that backpropagating M1 total_loss through the complete pipeline
+    (images -> backbone -> FPN -> M1 detector -> get_loss) produces finite
+    gradients at backbone.backbone.conv_stem.weight and all other parameters under AMP.
+    """
+    torch.manual_seed(42)
+    trainer = IndividualTrainer("m1", device, freeze_backbone=False)
+
+    images = torch.randn(2, 3, 640, 640, device=device)
+    target_boxes = torch.zeros(2, 5, 4, device=device)
+    target_boxes[:, 0, :] = torch.tensor([50.0, 50.0, 400.0, 400.0], device=device)
+    target_boxes[:, 1, :] = torch.tensor([0.0, 0.0, 600.0, 600.0], device=device)
+    target_boxes[:, 2, :] = torch.tensor([122.1760, 91.0768, 536.9984, 505.8992], device=device)
+    target_labels = torch.tensor([[1, 2, 3, 0, 0], [4, 5, 6, 0, 0]], dtype=torch.long, device=device)
+    targets = {
+        "boxes": target_boxes,
+        "labels": target_labels,
+        "num_objects": torch.tensor([3, 3], dtype=torch.long),
+    }
+
+    use_cuda_autocast = (device == "cuda")
+    with torch.amp.autocast("cuda", enabled=use_cuda_autocast):
+        losses = trainer.train_step(images, targets)
+
+    total_loss = losses["total_loss"]
+    assert torch.isfinite(total_loss)
+
+    total_loss.backward()
+
+    # Verify conv_stem gradient is finite
+    conv_stem = getattr(trainer.backbone.backbone, "conv_stem", None)
+    if conv_stem is not None:
+        assert conv_stem.weight.grad is not None
+        assert torch.isfinite(conv_stem.weight.grad).all()
+
+    # Verify all trainable parameters have finite gradients
+    for p in trainer.all_params:
+        if p.grad is not None:
+            assert torch.isfinite(p.grad).all()
+
