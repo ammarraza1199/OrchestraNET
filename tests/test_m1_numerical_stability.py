@@ -319,3 +319,53 @@ def test_amp_dtype_cli_argument():
     assert args.amp_dtype == "none"
 
 
+def test_validate_m1_bf16_numpy_conversion():
+    """Verify validate_m1 runs under BF16 without TypeError: Got unsupported ScalarType BFloat16."""
+    from training.train_individual import validate_m1
+    from torch.utils.data import DataLoader, TensorDataset
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    trainer = IndividualTrainer("m1", device, freeze_backbone=False)
+
+    images = torch.randn(2, 3, 640, 640)
+    target_boxes = torch.zeros(2, 5, 4)
+    target_boxes[:, 0, :] = torch.tensor([50.0, 50.0, 400.0, 400.0])
+    target_labels = torch.tensor([[1, 2, 0, 0, 0], [3, 4, 0, 0, 0]], dtype=torch.long)
+    num_objects = torch.tensor([2, 2], dtype=torch.long)
+
+    class DummyValDataset(torch.utils.data.Dataset):
+        def __len__(self):
+            return 2
+        def __getitem__(self, idx):
+            return images[idx], {
+                "boxes": target_boxes[idx],
+                "labels": target_labels[idx],
+                "num_objects": num_objects[idx],
+            }
+
+    def collate_fn(batch):
+        imgs = torch.stack([b[0] for b in batch])
+        boxes = torch.stack([b[1]["boxes"] for b in batch])
+        labels = torch.stack([b[1]["labels"] for b in batch])
+        num_objs = torch.stack([b[1]["num_objects"] for b in batch])
+        return imgs, {"boxes": boxes, "labels": labels, "num_objects": num_objs}
+
+    val_loader = DataLoader(DummyValDataset(), batch_size=2, collate_fn=collate_fn)
+
+    # Set conf_thresh very low so that detections pass the threshold and reach .cpu().numpy()
+    results = validate_m1(
+        trainer=trainer,
+        val_loader=val_loader,
+        device=device,
+        conf_thresh=0.0001,
+        iou_thresh=0.45,
+        max_detections=10,
+        num_images=2,
+        amp_dtype="bf16",
+    )
+
+    assert "mAP@50" in results
+    assert "diagnostics" in results
+
+
+

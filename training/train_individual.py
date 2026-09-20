@@ -308,8 +308,8 @@ def validate_m1(
                     kept_box_min[i_coord] = min(kept_box_min[i_coord], k_min[i_coord])
                     kept_box_max[i_coord] = max(kept_box_max[i_coord], k_max[i_coord])
 
-                pred_boxes = f_boxes[keep].cpu().numpy()
-                pred_scores = f_scores[keep].cpu().numpy()
+                pred_boxes = f_boxes[keep].float().cpu().numpy()
+                pred_scores = f_scores[keep].float().cpu().numpy()
                 pred_labels = f_labels[keep].cpu().numpy()
 
             # Extract ground truth
@@ -324,7 +324,7 @@ def validate_m1(
             gt_boxes_t = targets["boxes"][b][:n_gt]
             gt_labels_t = targets["labels"][b][:n_gt]
 
-            gt_boxes = gt_boxes_t.cpu().numpy() if isinstance(gt_boxes_t, torch.Tensor) else np.asarray(gt_boxes_t)
+            gt_boxes = gt_boxes_t.float().cpu().numpy() if isinstance(gt_boxes_t, torch.Tensor) else np.asarray(gt_boxes_t, dtype=np.float32)
             gt_labels = gt_labels_t.cpu().numpy() if isinstance(gt_labels_t, torch.Tensor) else np.asarray(gt_labels_t)
 
             metrics.update(

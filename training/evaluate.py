@@ -82,16 +82,16 @@ def evaluate(model, loader, device, conf_thresh=0.25, ablate=None, num_images=No
                 det = detections[b]
                 if det["boxes"].shape[0] == 0:
                     metrics.update([], [], [], 
-                                   targets["boxes"][b][:targets["num_objects"][b]].numpy(),
+                                   targets["boxes"][b][:targets["num_objects"][b]].float().numpy(),
                                    targets["labels"][b][:targets["num_objects"][b]].numpy(),
                                    image_id=count)
                 else:
                     mask = det["scores"] > conf_thresh
-                    pred_boxes = det["boxes"][mask].cpu().numpy()
-                    pred_scores = det["scores"][mask].cpu().numpy()
+                    pred_boxes = det["boxes"][mask].float().cpu().numpy()
+                    pred_scores = det["scores"][mask].float().cpu().numpy()
                     pred_labels = det["labels"][mask].cpu().numpy()
                     n = targets["num_objects"][b].item()
-                    gt_boxes = targets["boxes"][b][:n].numpy()
+                    gt_boxes = targets["boxes"][b][:n].float().numpy()
                     gt_labels = targets["labels"][b][:n].numpy()
                     metrics.update(pred_boxes, pred_scores, pred_labels,
                                    gt_boxes, gt_labels, image_id=count)
