@@ -102,6 +102,8 @@ def parse_args():
                         help="Google Drive directory to synchronise checkpoints to")
     parser.add_argument("--eval-only", action="store_true",
                         help="Run validation only on the checkpoint and exit")
+    parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16", "none"],
+                        help="AMP precision mode: 'bf16' (recommended for A100/Ampere), 'fp16', or 'none' (FP32)")
     return parser.parse_args()
 
 
@@ -200,6 +202,7 @@ def validate_m1(
     iou_thresh: float = 0.5,
     max_detections: int = 300,
     num_images: int | None = None,
+    amp_dtype: str = "bf16",
 ) -> dict[str, Any]:
     """
     Evaluate M1 on COCO val2017 using DetectionMetrics with full diagnostics.
@@ -237,7 +240,9 @@ def validate_m1(
             break
 
         images = images.to(device, non_blocking=True)
-        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+        autocast_enabled = (device == "cuda" and amp_dtype != "none")
+        autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+        with torch.amp.autocast("cuda", enabled=autocast_enabled, dtype=autocast_dtype):
             backbone_feats = trainer.backbone(images)
             fpn_feats = trainer.fpn(backbone_feats)
             predictions = trainer.model(fpn_feats)
@@ -394,6 +399,7 @@ def validate_loss(
     val_loader: DataLoader,
     device: str,
     num_images: int | None = None,
+    amp_dtype: str = "bf16",
 ) -> dict[str, float]:
     """
     Evaluate validation loss for non-M1 micro-models (M2, M3, M4, M6).
@@ -412,7 +418,9 @@ def validate_loss(
 
         B = images.shape[0]
         images = images.to(device, non_blocking=True)
-        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+        autocast_enabled = (device == "cuda" and amp_dtype != "none")
+        autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+        with torch.amp.autocast("cuda", enabled=autocast_enabled, dtype=autocast_dtype):
             losses = trainer.train_step(images, targets)
 
         total_loss_sum += losses["total_loss"].item() * B
@@ -435,6 +443,7 @@ def validate_m4(
     val_loader: DataLoader,
     device: str,
     num_images: int | None = None,
+    amp_dtype: str = "bf16",
 ) -> dict[str, float]:
     """
     Evaluate validation loss and canonical depth metrics for M4:
@@ -448,7 +457,7 @@ def validate_m4(
     total_loss_sum = 0.0
     comp_sums = defaultdict(float)
     count = 0
-    depth_metrics = DepthMetrics(min_depth=0.001, max_depth=80.0)
+    depth_metrics = DepthMetrics(min_depth=1e-3, max_depth=80.0)
 
     for images, targets in val_loader:
         if num_images is not None and count >= num_images:
@@ -461,7 +470,9 @@ def validate_m4(
             for k, v in targets.items()
         }
 
-        with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+        autocast_enabled = (device == "cuda" and amp_dtype != "none")
+        autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+        with torch.amp.autocast("cuda", enabled=autocast_enabled, dtype=autocast_dtype):
             backbone_features = trainer.backbone(images)
             fpn_features = trainer.fpn(backbone_features)
             predictions = trainer.model(fpn_features)
@@ -1033,11 +1044,22 @@ def main():
         )
 
     # Mixed precision
+    use_scaler = (args.device == "cuda" and args.amp_dtype == "fp16")
     scaler = torch.amp.GradScaler(
         "cuda",
-        enabled=(args.device == "cuda"),
+        enabled=use_scaler,
         init_scale=1024.0,
     )
+
+    if args.device == "cuda":
+        if args.amp_dtype == "bf16":
+            logger.info("   AMP Mode: BFloat16 (BF16) on CUDA (GradScaler disabled per standard design)")
+        elif args.amp_dtype == "fp16":
+            logger.info("   AMP Mode: Float16 (FP16) on CUDA (GradScaler enabled, init_scale=1024.0)")
+        else:
+            logger.info("   AMP Mode: Disabled (Full FP32)")
+    else:
+        logger.info("   Device: CPU (Full FP32)")
 
     # EMA
     ema = None
@@ -1123,6 +1145,7 @@ def main():
                 val_loader,
                 device=args.device,
                 num_images=val_images_limit,
+                amp_dtype=args.amp_dtype,
             )
         elif args.model == "m6":
             val_metrics = validate_m6(
@@ -1137,6 +1160,7 @@ def main():
                 val_loader,
                 device=args.device,
                 num_images=val_images_limit,
+                amp_dtype=args.amp_dtype,
             )
         else:
             val_metrics = validate_loss(
@@ -1144,6 +1168,7 @@ def main():
                 val_loader,
                 device=args.device,
                 num_images=val_images_limit,
+                amp_dtype=args.amp_dtype,
             )
         if ema:
             ema.restore(trainer.model)
@@ -1168,7 +1193,9 @@ def main():
         for batch_idx, (images, targets) in enumerate(loader):
             optimizer.zero_grad()
 
-            with torch.amp.autocast("cuda", enabled=(args.device == "cuda")):
+            autocast_enabled = (args.device == "cuda" and args.amp_dtype != "none")
+            autocast_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
+            with torch.amp.autocast("cuda", enabled=autocast_enabled, dtype=autocast_dtype):
                 losses = trainer.train_step(images, targets)
 
             # Check total_loss with torch.isfinite() before backward
@@ -1191,8 +1218,11 @@ def main():
                     f"Stopping training to prevent parameter corruption."
                 )
 
-            scaler.scale(total_loss).backward()
-            scaler.unscale_(optimizer)
+            if use_scaler:
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
+            else:
+                total_loss.backward()
 
             # Check all gradients for finite values before clipping
             grads_finite = True
@@ -1219,7 +1249,8 @@ def main():
                     f"{'!'*70}\n"
                 )
                 optimizer.zero_grad()
-                scaler.update()
+                if use_scaler:
+                    scaler.update()
                 continue
 
             try:
@@ -1228,12 +1259,16 @@ def main():
                 nn.utils.clip_grad_norm_(trainable_params, 10.0)
 
             # Ensure optimizer.step() occurs before scheduler.step()
-            scale_before = scaler.get_scale()
-            scaler.step(optimizer)
-            scaler.update()
-            scale_after = scaler.get_scale()
-            # Only advance scheduler if optimizer was actually stepped (not skipped by scaler)
-            if not (args.device == "cuda" and scale_after < scale_before):
+            if use_scaler:
+                scale_before = scaler.get_scale()
+                scaler.step(optimizer)
+                scaler.update()
+                scale_after = scaler.get_scale()
+                # Only advance scheduler if optimizer was actually stepped (not skipped by scaler)
+                if not (scale_after < scale_before):
+                    scheduler.step()
+            else:
+                optimizer.step()
                 scheduler.step()
 
             # Lightweight finite-parameter check after optimizer.step()
@@ -1312,6 +1347,7 @@ def main():
                     val_loader,
                     device=args.device,
                     num_images=val_images_limit,
+                    amp_dtype=args.amp_dtype,
                 )
                 diag = val_metrics.get("diagnostics", {})
                 logger.info(
@@ -1363,6 +1399,7 @@ def main():
                     val_loader,
                     device=args.device,
                     num_images=val_images_limit,
+                    amp_dtype=args.amp_dtype,
                 )
                 loss_comp_str = " | ".join(
                     f"{k}: {v:.4f}" for k, v in val_metrics.items()
@@ -1381,6 +1418,7 @@ def main():
                     val_loader,
                     device=args.device,
                     num_images=val_images_limit,
+                    amp_dtype=args.amp_dtype,
                 )
                 loss_comp_str = " | ".join(
                     f"{k}: {v:.4f}" for k, v in val_metrics.items()

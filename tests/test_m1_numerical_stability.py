@@ -241,3 +241,81 @@ def test_m1_loss_and_conv_stem_gradients_finite_under_amp(device):
         if p.grad is not None:
             assert torch.isfinite(p.grad).all()
 
+
+def test_m1_bf16_amp_forward_and_backward_finite():
+    """
+    Verify that running M1 pipeline under BFloat16 (BF16) produces strictly finite
+    losses, finite backward gradients across all backbone, FPN, and detector head parameters
+    (specifically conv_stem and blocks.0.0.conv_exp), and permits optimizer.step()
+    without any GradScaler scaling.
+    """
+    torch.manual_seed(42)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    trainer = IndividualTrainer("m1", device, freeze_backbone=False)
+
+    images = torch.randn(2, 3, 640, 640, device=device)
+    target_boxes = torch.zeros(2, 5, 4, device=device)
+    target_boxes[:, 0, :] = torch.tensor([50.0, 50.0, 400.0, 400.0], device=device)
+    target_boxes[:, 1, :] = torch.tensor([0.0, 0.0, 600.0, 600.0], device=device)
+    target_boxes[:, 2, :] = torch.tensor([122.1760, 91.0768, 536.9984, 505.8992], device=device)
+    target_labels = torch.tensor([[1, 2, 3, 0, 0], [4, 5, 6, 0, 0]], dtype=torch.long, device=device)
+    targets = {
+        "boxes": target_boxes,
+        "labels": target_labels,
+        "num_objects": torch.tensor([3, 3], dtype=torch.long),
+    }
+
+    # Autocast in BF16 (supported on CUDA and CPU in PyTorch)
+    autocast_device = "cuda" if device == "cuda" else "cpu"
+    with torch.amp.autocast(autocast_device, enabled=True, dtype=torch.bfloat16):
+        losses = trainer.train_step(images, targets)
+
+    total_loss = losses["total_loss"]
+    assert torch.isfinite(total_loss), f"BF16 total_loss is non-finite: {total_loss}"
+
+    # In BF16, no GradScaler is used
+    trainer.model.zero_grad()
+    trainer.fpn.zero_grad()
+    trainer.backbone.zero_grad()
+    total_loss.backward()
+
+    # Check conv_stem and early backbone blocks
+    conv_stem = getattr(trainer.backbone.backbone, "conv_stem", None)
+    if conv_stem is not None and conv_stem.weight.grad is not None:
+        assert torch.isfinite(conv_stem.weight.grad).all(), "conv_stem.weight.grad is non-finite under BF16!"
+
+    # Check all trainable parameters
+    trainable_params = [p for p in trainer.all_params if p.requires_grad]
+    for p in trainable_params:
+        if p.grad is not None:
+            assert torch.isfinite(p.grad).all(), "Parameter gradient is non-finite under BF16!"
+
+    # Check optimizer step
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
+    optimizer.step()
+
+    for p in trainable_params:
+        assert torch.isfinite(p).all(), "Parameter became non-finite after optimizer.step() under BF16!"
+
+
+def test_amp_dtype_cli_argument():
+    """Verify --amp-dtype CLI argument options and default in train_individual."""
+    from training.train_individual import parse_args
+    import sys
+
+    # Test default
+    sys.argv = ["train_individual.py", "--model", "m1"]
+    args = parse_args()
+    assert args.amp_dtype == "bf16"
+
+    # Test explicit fp16
+    sys.argv = ["train_individual.py", "--model", "m1", "--amp-dtype", "fp16"]
+    args = parse_args()
+    assert args.amp_dtype == "fp16"
+
+    # Test explicit none (FP32)
+    sys.argv = ["train_individual.py", "--model", "m1", "--amp-dtype", "none"]
+    args = parse_args()
+    assert args.amp_dtype == "none"
+
+
