@@ -23,12 +23,18 @@
 set -euo pipefail
 
 # === Configuration ===
-DATA_ROOT="./data/coco"
+DATA_ROOT="./data"
 SAVE_DIR="./checkpoints"
 LOG_DIR="./logs"
 DEVICE="cuda"
-BATCH_SIZE=16
+BATCH_SIZE=32
 NUM_WORKERS=4
+AMP_DTYPE="fp16"
+DRIVE_SAVE_DIR=""
+# Auto-detect if Colab Google Drive is mounted
+if [ -d "/content/drive/MyDrive/ANVRiksh Project/OrchestraNET" ]; then
+    DRIVE_SAVE_DIR="/content/drive/MyDrive/ANVRiksh Project/OrchestraNET"
+fi
 START_PHASE="${1:---start-phase}"
 START_PHASE_NUM=1
 
@@ -45,6 +51,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --data-root)
             DATA_ROOT="$2"
+            shift 2
+            ;;
+        --amp-dtype)
+            AMP_DTYPE="$2"
+            shift 2
+            ;;
+        --drive-save-dir)
+            DRIVE_SAVE_DIR="$2"
             shift 2
             ;;
         *)
@@ -64,6 +78,11 @@ echo "   Data:       ${DATA_ROOT}"
 echo "   Device:     ${DEVICE}"
 echo "   Batch size: ${BATCH_SIZE}"
 echo "   Start from: Phase ${START_PHASE_NUM}"
+if [ -n "${DRIVE_SAVE_DIR}" ]; then
+    echo "   Drive Sync: ${DRIVE_SAVE_DIR} (Enabled)"
+else
+    echo "   Drive Sync: Disabled (Local only)"
+fi
 echo ""
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -74,39 +93,111 @@ log() {
     echo "[$(date '+%H:%M:%S')] $1" | tee -a "${PIPELINE_LOG}"
 }
 
+sync_to_drive_all() {
+    if [ -n "${DRIVE_SAVE_DIR}" ]; then
+        log "☁️ Syncing checkpoints, logs, and results to Google Drive..."
+        mkdir -p "${DRIVE_SAVE_DIR}/checkpoints" "${DRIVE_SAVE_DIR}/logs" "${DRIVE_SAVE_DIR}/results"
+        cp -r -u "${SAVE_DIR}"/* "${DRIVE_SAVE_DIR}/checkpoints/" 2>/dev/null || true
+        cp -r -u "${LOG_DIR}"/* "${DRIVE_SAVE_DIR}/logs/" 2>/dev/null || true
+        if [ -d "./results" ]; then
+            cp -r -u ./results/* "${DRIVE_SAVE_DIR}/results/" 2>/dev/null || true
+        fi
+        log "   ✅ Google Drive backup synced"
+    fi
+}
+
 # ============================================================================
 # Phase 1: Individual Model Pre-training
 # ============================================================================
 if [ "${START_PHASE_NUM}" -le 1 ]; then
     log "═══ Phase 1: Individual Model Pre-training ═══"
 
-    # Pre-training epochs per model
+    # Pre-training epochs per model (calibrated for convergence)
     declare -A MODEL_EPOCHS=(
-        ["m1"]=50 ["m2"]=30 ["m3"]=30
+        ["m1"]=35 ["m2"]=30 ["m3"]=30
         ["m4"]=30 ["m5"]=20 ["m6"]=30
     )
 
     for model_id in m1 m2 m3 m4 m5 m6; do
         epochs=${MODEL_EPOCHS[$model_id]}
-        log "▶ Training ${model_id} for ${epochs} epochs..."
+
+        # Map correct dataset directory per micro-model
+        model_data="${DATA_ROOT}"
+        if [ "${model_id}" = "m1" ] || [ "${model_id}" = "m3" ]; then
+            if [ -d "${DATA_ROOT}/coco/coco" ]; then
+                model_data="${DATA_ROOT}/coco/coco"
+            elif [ -d "${DATA_ROOT}/coco" ]; then
+                model_data="${DATA_ROOT}/coco"
+            fi
+        elif [ "${model_id}" = "m2" ] || [ "${model_id}" = "m6" ]; then
+            # M2 (Occlusion) & M6 (Amodal) use KINS for real occlusion masks (finishes in ~18 & ~26 mins)
+            if [ -d "${DATA_ROOT}/KINS" ]; then
+                model_data="${DATA_ROOT}/KINS"
+            elif [ -d "${DATA_ROOT}/coco/coco" ]; then
+                model_data="${DATA_ROOT}/coco/coco"
+            elif [ -d "${DATA_ROOT}/coco" ]; then
+                model_data="${DATA_ROOT}/coco"
+            fi
+        elif [ "${model_id}" = "m4" ]; then
+            if [ -d "${DATA_ROOT}/kitti" ]; then
+                model_data="${DATA_ROOT}/kitti"
+            else
+                log "   ⚠️ KITTI depth dataset not found at ${DATA_ROOT}/kitti. Skipping M4 individual pre-training (will use default head weights in joint training)."
+                continue
+            fi
+        elif [ "${model_id}" = "m5" ]; then
+            if [ -d "${DATA_ROOT}/places365" ]; then
+                model_data="${DATA_ROOT}/places365"
+            else
+                log "   ⚠️ Places365 dataset not found at ${DATA_ROOT}/places365. Skipping M5 individual pre-training (will use default head weights in joint training)."
+                continue
+            fi
+        fi
+
+        # Check for resume checkpoint (e.g. continuing m1 from epoch 8)
+        resume_args=()
+        if [ -f "${SAVE_DIR}/individual/${model_id}_latest.pt" ]; then
+            resume_args=(--resume "${SAVE_DIR}/individual/${model_id}_latest.pt")
+            log "   Found existing checkpoint: ${SAVE_DIR}/individual/${model_id}_latest.pt (Resuming)"
+        fi
+
+        # Extra flags for M1 (boost classification loss for fast convergence)
+        extra_args=()
+        if [ "${model_id}" = "m1" ]; then
+            extra_args=(--cls-loss-weight 2.0 --conf-thresh 0.05)
+        fi
+
+        # Drive sync args
+        drive_args=()
+        if [ -n "${DRIVE_SAVE_DIR}" ]; then
+            drive_args=(--drive-save-dir "${DRIVE_SAVE_DIR}/checkpoints/individual")
+        fi
+
+        log "▶ Training ${model_id} for ${epochs} epochs (data: ${model_data})..."
 
         python training/train_individual.py \
             --model "${model_id}" \
-            --data-root "${DATA_ROOT}" \
+            --data-root "${model_data}" \
             --epochs "${epochs}" \
             --batch-size "${BATCH_SIZE}" \
             --device "${DEVICE}" \
+            --amp-dtype "${AMP_DTYPE}" \
             --save-dir "${SAVE_DIR}/individual" \
             --log-dir "${LOG_DIR}/individual" \
             --num-workers "${NUM_WORKERS}" \
             --use-ema \
+            "${resume_args[@]}" \
+            "${extra_args[@]}" \
+            "${drive_args[@]}" \
             2>&1 | tee -a "${PIPELINE_LOG}"
 
         log "   ✅ ${model_id} pre-training complete"
+        sync_to_drive_all
         echo ""
     done
 
     log "✅ Phase 1 complete: All individual models pre-trained"
+    sync_to_drive_all
     echo ""
 fi
 
@@ -116,9 +207,21 @@ fi
 if [ "${START_PHASE_NUM}" -le 2 ]; then
     log "═══ Phase 2: Joint Training ═══"
 
+    joint_data="${DATA_ROOT}"
+    if [ -d "${DATA_ROOT}/coco/coco" ]; then
+        joint_data="${DATA_ROOT}/coco/coco"
+    elif [ -d "${DATA_ROOT}/coco" ]; then
+        joint_data="${DATA_ROOT}/coco"
+    fi
+
+    joint_drive_args=()
+    if [ -n "${DRIVE_SAVE_DIR}" ]; then
+        joint_drive_args=(--drive-save-dir "${DRIVE_SAVE_DIR}/checkpoints")
+    fi
+
     python training/train_joint.py \
-        --data-root "${DATA_ROOT}" \
-        --epochs 100 \
+        --data-root "${joint_data}" \
+        --epochs 35 \
         --batch-size "${BATCH_SIZE}" \
         --device "${DEVICE}" \
         --save-dir "${SAVE_DIR}" \
@@ -126,11 +229,13 @@ if [ "${START_PHASE_NUM}" -le 2 ]; then
         --num-workers "${NUM_WORKERS}" \
         --load-individual "${SAVE_DIR}/individual" \
         --use-ema \
-        --warmup-epochs 5 \
+        --warmup-epochs 3 \
         --save-freq 5 \
+        "${joint_drive_args[@]}" \
         2>&1 | tee -a "${PIPELINE_LOG}"
 
     log "✅ Phase 2 complete: Joint training done"
+    sync_to_drive_all
     echo ""
 fi
 
@@ -146,6 +251,11 @@ if [ "${START_PHASE_NUM}" -le 3 ]; then
         JOINT_CKPT="${SAVE_DIR}/orchestranet_final.pt"
     fi
 
+    router_drive_args=()
+    if [ -n "${DRIVE_SAVE_DIR}" ]; then
+        router_drive_args=(--drive-save-dir "${DRIVE_SAVE_DIR}/checkpoints/router")
+    fi
+
     python training/train_router.py \
         --weights "${JOINT_CKPT}" \
         --data-root "${DATA_ROOT}" \
@@ -155,9 +265,13 @@ if [ "${START_PHASE_NUM}" -le 3 ]; then
         --save-dir "${SAVE_DIR}/router" \
         --log-dir "${LOG_DIR}/router" \
         --num-workers "${NUM_WORKERS}" \
+        --acc-weight 1.3 \
+        --lat-weight 0.2 \
+        "${router_drive_args[@]}" \
         2>&1 | tee -a "${PIPELINE_LOG}"
 
     log "✅ Phase 3 complete: Router training done"
+    sync_to_drive_all
     echo ""
 fi
 
@@ -193,6 +307,7 @@ if [ "${START_PHASE_NUM}" -le 4 ]; then
     done
 
     log "✅ Phase 4 complete: Evaluation and ablations done"
+    sync_to_drive_all
     echo ""
 fi
 
@@ -224,8 +339,12 @@ if [ "${START_PHASE_NUM}" -le 5 ]; then
         2>&1 | tee -a "${PIPELINE_LOG}"
 
     log "✅ Phase 5 complete: Models exported"
+    sync_to_drive_all
     echo ""
 fi
+
+# Final overall Drive sync
+sync_to_drive_all
 
 # ============================================================================
 # Summary
@@ -241,9 +360,15 @@ echo "   Logs:        ${LOG_DIR}/"
 echo "   Exports:     ./exports/"
 echo "   Results:     ./results/"
 echo "   Pipeline log: ${PIPELINE_LOG}"
+if [ -n "${DRIVE_SAVE_DIR}" ]; then
+    echo "   Drive Backup: ${DRIVE_SAVE_DIR}/"
+fi
 echo ""
 echo "📊 View TensorBoard:"
 echo "   tensorboard --logdir ${LOG_DIR} --bind_all"
 echo ""
-echo "🔄 Sync to S3:"
+echo "🔄 Continuous Sync to Google Drive:"
+echo "   bash aws/sync_gdrive.sh --watch"
+echo ""
+echo "🔄 Sync to S3 (Optional):"
 echo "   bash aws/sync_checkpoints.sh"

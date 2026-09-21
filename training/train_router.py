@@ -137,8 +137,52 @@ def main():
     parser.add_argument("--save-dir", default="./checkpoints/router")
     parser.add_argument("--log-dir", default="./logs/router")
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--drive-save-dir", default=None,
+                        help="Google Drive directory to synchronise checkpoints and logs to")
+    parser.add_argument("--acc-weight", type=float, default=1.3,
+                        help="Weight for accuracy reward (default: 1.3)")
+    parser.add_argument("--lat-weight", type=float, default=0.2,
+                        help="Weight for latency penalty (default: 0.2)")
+    parser.add_argument("--eff-weight", type=float, default=0.05,
+                        help="Weight for efficiency bonus (default: 0.05)")
     args = parser.parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
+
+
+def sync_file_to_drive(
+    src_path: str | Path,
+    drive_dir: str | Path,
+    logger: TrainingLogger | None = None,
+) -> str | None:
+    """Safely copy/sync a file to Google Drive using atomic write."""
+    if not drive_dir:
+        return None
+    try:
+        import shutil
+        src_path = Path(src_path)
+        drive_dir = Path(drive_dir)
+        drive_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_path = drive_dir / src_path.name
+        tmp_dest = drive_dir / f"{src_path.name}.tmp"
+
+        shutil.copyfile(src_path, tmp_dest)
+        try:
+            with open(tmp_dest, "a+b") as f:
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, IOError):
+            pass
+
+        os.replace(tmp_dest, dest_path)
+        if logger:
+            logger.info(f"  ☁️ Drive sync complete: {dest_path}")
+        return str(dest_path)
+    except Exception as e:
+        msg = f"Drive synchronisation failed for {src_path} -> {drive_dir}: {type(e).__name__}: {e}"
+        if logger:
+            logger.error(msg)
+        return None
 
     logger = TrainingLogger(log_dir=args.log_dir, tb_enabled=True)
 
@@ -158,7 +202,13 @@ def main():
         num_workers=args.num_workers, drop_last=True,
     )
 
-    trainer = RouterRLTrainer(model, device=args.device)
+    trainer = RouterRLTrainer(
+        model,
+        device=args.device,
+        acc_w=args.acc_weight,
+        lat_w=args.lat_weight,
+        eff_w=args.eff_weight,
+    )
     optimizer = torch.optim.Adam(
         [p for p in model.router.parameters() if p.requires_grad],
         lr=args.lr,
@@ -198,10 +248,19 @@ def main():
         )
         logger.log_epoch(epoch, {"reward": reward_meter.avg, "dist": dist})
 
+    router_save_path = os.path.join(args.save_dir, "router_trained.pt")
     torch.save(
         {"router_state_dict": model.router.state_dict()},
-        os.path.join(args.save_dir, "router_trained.pt"),
+        router_save_path,
     )
+    if args.drive_save_dir:
+        sync_file_to_drive(router_save_path, args.drive_save_dir, logger=logger)
+        drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "router"
+        if logger.json_path.exists():
+            sync_file_to_drive(logger.json_path, drive_log_dir, logger=None)
+        if logger.log_file_path.exists():
+            sync_file_to_drive(logger.log_file_path, drive_log_dir, logger=None)
+
     logger.flush()
     logger.close()
     logger.info("✅ Router training complete.")

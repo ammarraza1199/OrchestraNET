@@ -66,7 +66,7 @@ def evaluate(model, loader, device, conf_thresh=0.25, ablate=None, num_images=No
         if device == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
-        outputs = model(images)
+        outputs = model(images, conf_thresh=conf_thresh)
         if device == "cuda":
             torch.cuda.synchronize()
         t1 = time.perf_counter()

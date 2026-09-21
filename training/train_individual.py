@@ -1599,8 +1599,23 @@ def main():
         epoch_log["best_loss"] = float(best_loss)
         logger.log_epoch(epoch, epoch_log)
 
+        if args.drive_save_dir:
+            drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "individual" / args.model
+            if logger.json_path.exists():
+                sync_file_to_drive(logger.json_path, drive_log_dir, logger=None)
+            if logger.log_file_path.exists():
+                sync_file_to_drive(logger.log_file_path, drive_log_dir, logger=None)
+
     logger.flush()
     logger.close()
+
+    if args.drive_save_dir:
+        drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "individual" / args.model
+        if logger.json_path.exists():
+            sync_file_to_drive(logger.json_path, drive_log_dir, logger=None)
+        if logger.log_file_path.exists():
+            sync_file_to_drive(logger.log_file_path, drive_log_dir, logger=None)
+
     logger.info(f"\n✅ {args.model} pre-training complete!")
 
 

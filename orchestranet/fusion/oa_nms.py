@@ -20,7 +20,7 @@ def occlusion_aware_nms(
     depth_values: torch.Tensor | None = None,
     iou_threshold: float = 0.5,
     occlusion_threshold: float = 0.3,
-    score_threshold: float = 0.25,
+    score_threshold: float = 0.05,
     max_detections: int = 300,
 ) -> dict[str, torch.Tensor]:
     """

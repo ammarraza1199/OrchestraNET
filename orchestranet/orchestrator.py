@@ -91,6 +91,7 @@ class OrchestraNet(nn.Module):
         self,
         images: torch.Tensor,
         targets: dict[str, torch.Tensor] | None = None,
+        conf_thresh: float = 0.05,
     ) -> dict[str, Any]:
         """
         Full OrchestraNet forward pass.
@@ -157,7 +158,7 @@ class OrchestraNet(nn.Module):
 
         # === Stage 5: OA-NMS (per image in batch) ===
         if not self.training and "m1" in model_outputs:
-            final_detections = self._apply_oa_nms(detections, model_outputs)
+            final_detections = self._apply_oa_nms(detections, model_outputs, score_threshold=conf_thresh)
         else:
             final_detections = detections
 
@@ -180,6 +181,7 @@ class OrchestraNet(nn.Module):
         self,
         detections: dict[str, torch.Tensor],
         model_outputs: dict[str, dict],
+        score_threshold: float = 0.05,
     ) -> list[dict[str, torch.Tensor]]:
         """Apply OA-NMS per image in the batch."""
         B = detections["boxes"].shape[0]
@@ -213,6 +215,7 @@ class OrchestraNet(nn.Module):
                 labels=labels,
                 occlusion_scores=occ_scores,
                 depth_values=depth_vals,
+                score_threshold=score_threshold,
             )
             results.append(result)
 

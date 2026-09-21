@@ -58,7 +58,45 @@ def parse_args():
     parser.add_argument("--use-ema", action="store_true", default=True)
     parser.add_argument("--load-individual", default=None,
                         help="Directory of individual pretrained checkpoints to load")
+    parser.add_argument("--drive-save-dir", default=None,
+                        help="Google Drive directory to synchronise checkpoints and logs to")
     return parser.parse_args()
+
+
+def sync_file_to_drive(
+    src_path: str | Path,
+    drive_dir: str | Path,
+    logger: TrainingLogger | None = None,
+) -> str | None:
+    """Safely copy/sync a file to Google Drive using atomic write."""
+    if not drive_dir:
+        return None
+    try:
+        import shutil
+        src_path = Path(src_path)
+        drive_dir = Path(drive_dir)
+        drive_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_path = drive_dir / src_path.name
+        tmp_dest = drive_dir / f"{src_path.name}.tmp"
+
+        shutil.copyfile(src_path, tmp_dest)
+        try:
+            with open(tmp_dest, "a+b") as f:
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, IOError):
+            pass
+
+        os.replace(tmp_dest, dest_path)
+        if logger:
+            logger.info(f"  ☁️ Drive sync complete: {dest_path}")
+        return str(dest_path)
+    except Exception as e:
+        msg = f"Drive synchronisation failed for {src_path} -> {drive_dir}: {type(e).__name__}: {e}"
+        if logger:
+            logger.error(msg)
+        return None
 
 
 def build_model(args) -> OrchestraNet:
@@ -287,19 +325,24 @@ def main():
         model.parameters(), lr=args.lr, weight_decay=1e-4
     )
 
-    # Warmup + cosine annealing
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.01,
-        total_iters=args.warmup_epochs * len(train_loader),
-    )
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=(args.epochs - args.warmup_epochs), eta_min=1e-6,
-    )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[args.warmup_epochs * len(train_loader)],
-    )
+    # Warmup + cosine annealing (stepped per epoch at line 357)
+    if args.warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.01,
+            total_iters=args.warmup_epochs,
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, args.epochs - args.warmup_epochs), eta_min=1e-6,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[args.warmup_epochs],
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, args.epochs), eta_min=1e-6,
+        )
 
     scaler = torch.amp.GradScaler("cuda", enabled=(args.device == "cuda"))
 
@@ -339,6 +382,8 @@ def main():
 
         # Update curriculum
         curr_params = curriculum.get_params(epoch)
+        if hasattr(train_dataset, "occlusion_aug") and train_dataset.occlusion_aug is not None:
+            train_dataset.occlusion_aug.max_occlusion_ratio = curr_params["max_ratio"]
         logger.info(
             f"Epoch {epoch}/{args.epochs} | "
             f"Curriculum: occ_prob={curr_params['occlusion_prob']:.1f}, "
@@ -400,14 +445,34 @@ def main():
             torch.save(ckpt_data, checkpoint_path)
             logger.info(f"  💾 Saved checkpoint: {checkpoint_path}")
 
+            if args.drive_save_dir:
+                sync_file_to_drive(checkpoint_path, args.drive_save_dir, logger=logger)
+
             if is_best:
                 best_path = os.path.join(args.save_dir, "orchestranet_best.pt")
                 torch.save(ckpt_data, best_path)
                 logger.info(f"  🏆 New best model: {best_path}")
+                if args.drive_save_dir:
+                    sync_file_to_drive(best_path, args.drive_save_dir, logger=logger)
+
+            if args.drive_save_dir:
+                drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "joint"
+                if logger.json_path.exists():
+                    sync_file_to_drive(logger.json_path, drive_log_dir, logger=None)
+                if logger.log_file_path.exists():
+                    sync_file_to_drive(logger.log_file_path, drive_log_dir, logger=None)
 
     # Save final model
     final_path = os.path.join(args.save_dir, "orchestranet_final.pt")
     torch.save(model.state_dict(), final_path)
+    if args.drive_save_dir:
+        sync_file_to_drive(final_path, args.drive_save_dir, logger=logger)
+        drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "joint"
+        if logger.json_path.exists():
+            sync_file_to_drive(logger.json_path, drive_log_dir, logger=None)
+        if logger.log_file_path.exists():
+            sync_file_to_drive(logger.log_file_path, drive_log_dir, logger=None)
+
     logger.flush()
     logger.close()
     logger.info(f"\n✅ Training complete. Final model saved: {final_path}")
