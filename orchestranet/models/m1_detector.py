@@ -163,7 +163,7 @@ def focal_loss(
 
         focal_weight = alpha_t * (1 - p_t) ** gamma
 
-        return (focal_weight * ce).mean()
+        return (focal_weight * ce).sum(-1).mean()
 
 
 class M1PrimaryDetector(BaseMicroModel):

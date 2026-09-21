@@ -108,6 +108,8 @@ def parse_args():
                         help="Confidence threshold for detection evaluation (default: 0.25)")
     parser.add_argument("--iou-thresh", type=float, default=0.5,
                         help="IoU threshold for NMS during evaluation (default: 0.5)")
+    parser.add_argument("--cls-loss-weight", type=float, default=1.0,
+                        help="Classification loss weight for M1 (default: 1.0)")
     return parser.parse_args()
 
 
@@ -119,7 +121,7 @@ class IndividualTrainer:
       Input → Backbone → FPN → [Single Micro-Model] → Task Loss
     """
 
-    def __init__(self, model_id, device, fpn_channels=128, freeze_backbone=False):
+    def __init__(self, model_id, device, fpn_channels=128, freeze_backbone=False, cls_loss_weight=None):
         self.model_id = model_id
         self.device = device
         info = MODEL_REGISTRY[model_id]
@@ -135,6 +137,11 @@ class IndividualTrainer:
         model_cls: Any = info["cls"]
         if model_id == "m6":
             self.model = model_cls(d_model=fpn_channels).to(device)
+        elif model_id == "m1":
+            kwargs = {"in_channels": fpn_channels}
+            if cls_loss_weight is not None:
+                kwargs["cls_loss_weight"] = cls_loss_weight
+            self.model = model_cls(**kwargs).to(device)
         else:
             self.model = model_cls(in_channels=fpn_channels).to(device)
 
@@ -843,6 +850,7 @@ def main():
     trainer = IndividualTrainer(
         args.model, args.device,
         freeze_backbone=args.freeze_backbone,
+        cls_loss_weight=getattr(args, "cls_loss_weight", None),
     )
     params = trainer.count_parameters()
     logger.info(f"\n📊 Parameters:")
