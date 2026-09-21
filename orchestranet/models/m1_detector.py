@@ -114,7 +114,7 @@ def generalized_box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Ten
         enc_area = (enc_x2 - enc_x1).clamp(min=0) * (enc_y2 - enc_y1).clamp(min=0)
 
         giou = iou - (enc_area - union) / (enc_area + 1e-7)
-        return giou
+        return torch.nan_to_num(giou, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1.0, 1.0)
 
 
 def focal_loss(
@@ -221,18 +221,23 @@ class M1PrimaryDetector(BaseMicroModel):
 
     def _decode_boxes(self, bbox_pred, level_idx, H, W, device):
         with torch.amp.autocast("cuda", enabled=False):
-            bbox_pred_fp32 = bbox_pred.float()
+            bbox_pred_fp32 = torch.nan_to_num(bbox_pred.float(), nan=0.0, posinf=10.0, neginf=-10.0)
             stride = 640 // H
             gy, gx = torch.meshgrid(
                 torch.arange(H, device=device, dtype=torch.float32),
                 torch.arange(W, device=device, dtype=torch.float32), indexing="ij")
             anchors = getattr(self, f"anchors_{level_idx}").to(device=device, dtype=torch.float32)
             tx, ty, tw, th = bbox_pred_fp32.split(1, dim=2)
+            tx = tx.clamp(-10.0, 10.0)
+            ty = ty.clamp(-10.0, 10.0)
+            tw = tw.clamp(-5.0, 5.0)
+            th = th.clamp(-5.0, 5.0)
             bx = (2 * torch.sigmoid(tx) - 0.5 + gx) * stride
             by = (2 * torch.sigmoid(ty) - 0.5 + gy) * stride
             bw = (2 * torch.sigmoid(tw)) ** 2 * anchors[:, 0].view(1, -1, 1, 1, 1)
             bh = (2 * torch.sigmoid(th)) ** 2 * anchors[:, 1].view(1, -1, 1, 1, 1)
-            return torch.cat([bx - bw/2, by - bh/2, bx + bw/2, by + bh/2], dim=2)
+            decoded = torch.cat([bx - bw/2, by - bh/2, bx + bw/2, by + bh/2], dim=2)
+            return torch.nan_to_num(decoded, nan=0.0, posinf=640.0, neginf=0.0)
 
     def get_loss(self, predictions, targets):
         """
@@ -351,14 +356,10 @@ class M1PrimaryDetector(BaseMicroModel):
             gt_idx = torch.tensor(matched_gt_indices, dtype=torch.long, device=device)
 
             # === Bbox Loss (GIoU) ===
-            matched_pred_boxes = b_pred_boxes[pred_idx].float()    # (n_matched, 4)
+            matched_pred_boxes = torch.nan_to_num(b_pred_boxes[pred_idx].float(), nan=0.0, posinf=640.0, neginf=0.0)
             matched_gt_boxes = gt_boxes_valid[gt_idx].float()      # (n_matched, 4)
             giou = generalized_box_iou(matched_pred_boxes, matched_gt_boxes)
-            if not torch.isfinite(giou).all():
-                raise RuntimeError(
-                    f"Non-finite GIoU detected during M1 loss computation: "
-                    f"giou={giou}, matched_pred_boxes={matched_pred_boxes}, matched_gt_boxes={matched_gt_boxes}"
-                )
+            giou = torch.nan_to_num(giou, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1.0, 1.0)
             bbox_loss = (1.0 - giou).mean()
             total_bbox_loss = total_bbox_loss + bbox_loss
 

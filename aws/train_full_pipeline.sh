@@ -29,7 +29,7 @@ LOG_DIR="./logs"
 DEVICE="cuda"
 BATCH_SIZE=32
 NUM_WORKERS=4
-AMP_DTYPE="fp16"
+AMP_DTYPE="bf16"
 DRIVE_SAVE_DIR=""
 # Auto-detect if Colab Google Drive is mounted
 if [ -d "/content/drive/MyDrive/ANVRiksh Project/OrchestraNET" ]; then
@@ -224,6 +224,7 @@ if [ "${START_PHASE_NUM}" -le 2 ]; then
         --epochs 35 \
         --batch-size "${BATCH_SIZE}" \
         --device "${DEVICE}" \
+        --amp-dtype "${AMP_DTYPE}" \
         --save-dir "${SAVE_DIR}" \
         --log-dir "${LOG_DIR}/joint" \
         --num-workers "${NUM_WORKERS}" \

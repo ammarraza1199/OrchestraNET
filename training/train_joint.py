@@ -60,6 +60,8 @@ def parse_args():
                         help="Directory of individual pretrained checkpoints to load")
     parser.add_argument("--drive-save-dir", default=None,
                         help="Google Drive directory to synchronise checkpoints and logs to")
+    parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16", "none"],
+                        help="AMP precision mode: 'bf16' (recommended), 'fp16', or 'none' (FP32)")
     return parser.parse_args()
 
 
@@ -202,7 +204,9 @@ def train_one_epoch(
 
         optimizer.zero_grad()
 
-        with torch.amp.autocast("cuda", enabled=use_cuda):
+        autocast_enabled = (use_cuda and getattr(args, "amp_dtype", "bf16") != "none")
+        autocast_dtype = torch.bfloat16 if getattr(args, "amp_dtype", "bf16") == "bf16" else torch.float16
+        with torch.amp.autocast("cuda", enabled=autocast_enabled, dtype=autocast_dtype):
             # Main forward pass
             outputs = model(images, targets)
             losses = outputs["losses"]
@@ -224,11 +228,16 @@ def train_one_epoch(
                 losses["ss_total"] = ss_losses["total"]
 
         # Backward pass
-        scaler.scale(total_loss).backward()
-        scaler.unscale_(optimizer)
-        nn.utils.clip_grad_norm_(model.parameters(), 10.0)
-        scaler.step(optimizer)
-        scaler.update()
+        if getattr(scaler, "is_enabled", lambda: False)():
+            scaler.scale(total_loss).backward()
+            scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            total_loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+            optimizer.step()
 
         # EMA update
         if ema:
@@ -344,7 +353,8 @@ def main():
             optimizer, T_max=max(1, args.epochs), eta_min=1e-6,
         )
 
-    scaler = torch.amp.GradScaler("cuda", enabled=(args.device == "cuda"))
+    use_scaler = (args.device == "cuda" and getattr(args, "amp_dtype", "bf16") == "fp16")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
     # Self-supervised components
     ss_loss_fn = SelfSupervisedOcclusionLoss().to(args.device)
