@@ -47,11 +47,12 @@ class DetectionHead(nn.Module):
         self._init_bias()
 
     def _init_bias(self):
-        # Initialize objectness bias to -4.595 (prior prob ~0.01) to prevent
-        # massive false-positive saturation and near-0.25 confidence explosion at start.
+        # Initialize objectness and class logits bias to -4.595 (prior prob ~0.01)
+        # to prevent massive false-positive saturation and early loss explosion.
         with torch.no_grad():
             b = self.pred.bias.view(self.num_anchors, -1)
-            b[:, 4].fill_(-4.595)
+            b[:, 4].fill_(-4.595)    # objectness prior = 0.01
+            b[:, 5:].fill_(-4.595)   # class logits prior = 0.01
 
     def forward(self, x):
         return self.pred(self.convs(x))
@@ -288,29 +289,51 @@ class M1PrimaryDetector(BaseMicroModel):
             with torch.no_grad():
                 cost_iou = box_iou(b_pred_boxes.detach(), gt_boxes_valid)  # (N_pred, n_gt)
 
-                # Cost = -IoU + cls cost (vectorized extraction of relevant class logits)
-                labels_clamped = gt_labels_valid.long().clamp(0, self.num_classes - 1)
-                cls_cost = -torch.sigmoid(b_pred_cls[:, labels_clamped].detach().float())
+                # Center prior: predictions whose center is inside or near the GT box
+                pred_cx = (b_pred_boxes[:, 0] + b_pred_boxes[:, 2]) * 0.5
+                pred_cy = (b_pred_boxes[:, 1] + b_pred_boxes[:, 3]) * 0.5
 
-                cost_matrix = -cost_iou + 0.5 * cls_cost  # (N_pred, n_gt)
+                gt_w = (gt_boxes_valid[:, 2] - gt_boxes_valid[:, 0]).clamp(min=1.0)
+                gt_h = (gt_boxes_valid[:, 3] - gt_boxes_valid[:, 1]).clamp(min=1.0)
+
+                # Tolerant center bounding: within [x1 - 0.2*w, x2 + 0.2*w]
+                in_gt = (
+                    (pred_cx[:, None] >= gt_boxes_valid[None, :, 0] - 0.2 * gt_w[None, :])
+                    & (pred_cx[:, None] <= gt_boxes_valid[None, :, 2] + 0.2 * gt_w[None, :])
+                    & (pred_cy[:, None] >= gt_boxes_valid[None, :, 1] - 0.2 * gt_h[None, :])
+                    & (pred_cy[:, None] <= gt_boxes_valid[None, :, 3] + 0.2 * gt_h[None, :])
+                )  # (N_pred, n_gt)
+
+                # Cost = -IoU - 0.5 * cls cost (lower cost is better for matching)
+                labels_clamped = gt_labels_valid.long().clamp(0, self.num_classes - 1)
+                cls_probs = torch.sigmoid(b_pred_cls[:, labels_clamped].detach().float())
+
+                cost_matrix = -cost_iou - 0.5 * cls_probs  # (N_pred, n_gt)
+                cost_matrix = cost_matrix + (~in_gt).float() * 1000.0
 
                 # Vectorized top-k per GT column in a single GPU call
-                k = min(10, b_pred_boxes.shape[0])
+                k = min(15, b_pred_boxes.shape[0])
                 topk_vals, topk_idxs = cost_matrix.topk(k, dim=0, largest=False)  # (k, n_gt)
-                # Transfer all candidate indices in one bulk CPU operation (eliminates GPU sync loop)
                 topk_cand_list = topk_idxs.t().tolist()  # (n_gt, k)
 
+                # Match up to top-3 anchors per GT box (standard multi-anchor matching)
+                top_k_per_gt = 3
                 matched_pred_indices = []
                 matched_gt_indices = []
                 used_preds = set()
 
                 for g, candidates in enumerate(topk_cand_list):
+                    matched_count = 0
                     for idx_item in candidates:
                         if idx_item not in used_preds:
-                            matched_pred_indices.append(idx_item)
-                            matched_gt_indices.append(g)
-                            used_preds.add(idx_item)
-                            break
+                            # Prioritize candidates inside GT; fallback to at least 1 match if none inside
+                            if in_gt[idx_item, g] or matched_count == 0:
+                                matched_pred_indices.append(idx_item)
+                                matched_gt_indices.append(g)
+                                used_preds.add(idx_item)
+                                matched_count += 1
+                                if matched_count >= top_k_per_gt:
+                                    break
 
             n_matched = len(matched_pred_indices)
             if n_matched == 0:
@@ -352,11 +375,7 @@ class M1PrimaryDetector(BaseMicroModel):
             # gradients are not diluted by N_pred (100k or 25k).
             with torch.amp.autocast("cuda", enabled=False):
                 obj_pred = b_pred_obj.float()
-                pos_target = giou.detach().clamp(0, 1)
-                if not torch.isfinite(pos_target).all():
-                    raise RuntimeError(
-                        f"Non-finite pos_target detected in M1 objectness loss: pos_target={pos_target}"
-                    )
+                pos_target = torch.ones_like(obj_pred[pred_idx])
                 pos_loss = F.binary_cross_entropy_with_logits(
                     obj_pred[pred_idx],
                     pos_target,
