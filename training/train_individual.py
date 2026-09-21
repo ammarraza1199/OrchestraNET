@@ -104,6 +104,10 @@ def parse_args():
                         help="Run validation only on the checkpoint and exit")
     parser.add_argument("--amp-dtype", default="bf16", choices=["bf16", "fp16", "none"],
                         help="AMP precision mode: 'bf16' (recommended for A100/Ampere), 'fp16', or 'none' (FP32)")
+    parser.add_argument("--conf-thresh", type=float, default=0.25,
+                        help="Confidence threshold for detection evaluation (default: 0.25)")
+    parser.add_argument("--iou-thresh", type=float, default=0.5,
+                        help="IoU threshold for NMS during evaluation (default: 0.5)")
     return parser.parse_args()
 
 
@@ -1146,6 +1150,8 @@ def main():
                 device=args.device,
                 num_images=val_images_limit,
                 amp_dtype=args.amp_dtype,
+                conf_thresh=args.conf_thresh,
+                iou_thresh=args.iou_thresh,
             )
         elif args.model == "m6":
             val_metrics = validate_m6(
@@ -1348,6 +1354,8 @@ def main():
                     device=args.device,
                     num_images=val_images_limit,
                     amp_dtype=args.amp_dtype,
+                    conf_thresh=args.conf_thresh,
+                    iou_thresh=args.iou_thresh,
                 )
                 diag = val_metrics.get("diagnostics", {})
                 logger.info(
