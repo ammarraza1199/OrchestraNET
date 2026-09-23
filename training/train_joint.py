@@ -420,6 +420,7 @@ def main():
         epoch_time = time.time() - epoch_start
 
         # Validate
+        logger.info("   🔍 Validating on COCO val2017...")
         if ema:
             ema.apply_shadow(model)
         val_metrics = validate(model, val_loader, args.device)

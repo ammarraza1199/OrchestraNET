@@ -64,6 +64,19 @@ def occlusion_aware_nms(
             "keep_indices": torch.tensor([], dtype=torch.long, device=boxes.device),
         }
 
+    # Pre-NMS top-k limit (standard in YOLO/Faster-RCNN) to prevent O(N^2) stalls
+    max_pre_nms = 1000
+    if boxes.shape[0] > max_pre_nms:
+        topk_idx = scores.topk(max_pre_nms)[1]
+        boxes = boxes[topk_idx]
+        scores = scores[topk_idx]
+        labels = labels[topk_idx]
+        original_indices = original_indices[topk_idx]
+        if occlusion_scores is not None:
+            occlusion_scores = occlusion_scores[topk_idx]
+        if depth_values is not None:
+            depth_values = depth_values[topk_idx]
+
     # Sort by confidence (descending)
     order = scores.argsort(descending=True)
     boxes = boxes[order]

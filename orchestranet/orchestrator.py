@@ -157,7 +157,8 @@ class OrchestraNet(nn.Module):
                           "class_logits": torch.empty(0)}
 
         # === Stage 5: OA-NMS (per image in batch) ===
-        if not self.training and "m1" in model_outputs:
+        # Only run post-processing NMS during inference (when targets are not provided)
+        if not self.training and targets is None and "m1" in model_outputs:
             final_detections = self._apply_oa_nms(detections, model_outputs, score_threshold=conf_thresh)
         else:
             final_detections = detections
