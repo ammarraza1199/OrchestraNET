@@ -69,6 +69,7 @@ done
 
 # Activate environment
 source ~/orchestranet_env/bin/activate 2>/dev/null || true
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 echo "🎼 ═══════════════════════════════════════════════════════════"
 echo "🎼   OrchestraNet — Full Training Pipeline"
@@ -223,6 +224,15 @@ if [ "${START_PHASE_NUM}" -le 2 ]; then
     if [ -f "${SAVE_DIR}/orchestranet_latest.pt" ]; then
         joint_resume_args=(--resume "${SAVE_DIR}/orchestranet_latest.pt")
         log "   Found existing joint checkpoint: ${SAVE_DIR}/orchestranet_latest.pt (Resuming)"
+    elif [ -f "${SAVE_DIR}/orchestranet_best.pt" ]; then
+        joint_resume_args=(--resume "${SAVE_DIR}/orchestranet_best.pt")
+        log "   Found existing joint checkpoint: ${SAVE_DIR}/orchestranet_best.pt (Resuming)"
+    else
+        latest_epoch_ckpt=$(ls -v "${SAVE_DIR}"/orchestranet_epoch*.pt 2>/dev/null | tail -n 1)
+        if [ -n "${latest_epoch_ckpt}" ] && [ -f "${latest_epoch_ckpt}" ]; then
+            joint_resume_args=(--resume "${latest_epoch_ckpt}")
+            log "   Found existing joint checkpoint: ${latest_epoch_ckpt} (Resuming)"
+        fi
     fi
 
     python training/train_joint.py \

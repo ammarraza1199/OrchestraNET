@@ -177,6 +177,7 @@ class OrchestraNet(nn.Module):
             "routing": routing,
             "model_outputs": model_outputs,
             "losses": losses,
+            "fpn_features": fpn_features,
         }
 
     def _apply_oa_nms(

@@ -219,10 +219,12 @@ def train_one_epoch(
 
             # Self-supervised occlusion loss
             if curriculum.should_apply_occlusion(epoch) and "m2" in outputs["model_outputs"]:
-                backbone_features = model.backbone(images)
-                fpn_features = model.fpn(backbone_features)
+                fpn_features = outputs.get("fpn_features")
+                if fpn_features is None:
+                    backbone_features = model.backbone(images)
+                    fpn_features = model.fpn(backbone_features)
                 masked_features, gt_mask = mask_generator(fpn_features[0])
-                m2_output = model.models["m2"]([masked_features] + fpn_features[1:])
+                m2_output = model.models["m2"]([masked_features] + [f.detach() for f in fpn_features[1:]])
                 ss_losses = ss_loss_fn(m2_output["occlusion_map"], gt_mask)
                 total_loss = total_loss + 0.5 * ss_losses["total"]
                 losses["ss_total"] = ss_losses["total"]
