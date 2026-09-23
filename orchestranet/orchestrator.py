@@ -162,13 +162,14 @@ class OrchestraNet(nn.Module):
         else:
             final_detections = detections
 
-        # === Compute Losses (training) ===
+        # === Compute Losses ===
         losses = {}
-        if targets is not None and self.training:
+        if targets is not None:
             for model_id, output in model_outputs.items():
-                model_loss = self.models[model_id].get_loss(output, targets)
-                for k, v in model_loss.items():
-                    losses[f"{model_id}_{k}"] = v
+                if hasattr(self.models[model_id], "get_loss"):
+                    model_loss = self.models[model_id].get_loss(output, targets)
+                    for k, v in model_loss.items():
+                        losses[f"{model_id}_{k}"] = v
 
         return {
             "detections": final_detections,

@@ -219,6 +219,12 @@ if [ "${START_PHASE_NUM}" -le 2 ]; then
         joint_drive_args=(--drive-save-dir "${DRIVE_SAVE_DIR}/checkpoints")
     fi
 
+    joint_resume_args=()
+    if [ -f "${SAVE_DIR}/orchestranet_latest.pt" ]; then
+        joint_resume_args=(--resume "${SAVE_DIR}/orchestranet_latest.pt")
+        log "   Found existing joint checkpoint: ${SAVE_DIR}/orchestranet_latest.pt (Resuming)"
+    fi
+
     python training/train_joint.py \
         --data-root "${joint_data}" \
         --epochs 35 \
@@ -232,6 +238,7 @@ if [ "${START_PHASE_NUM}" -le 2 ]; then
         --use-ema \
         --warmup-epochs 3 \
         --save-freq 5 \
+        "${joint_resume_args[@]}" \
         "${joint_drive_args[@]}" \
         2>&1 | tee -a "${PIPELINE_LOG}"
 

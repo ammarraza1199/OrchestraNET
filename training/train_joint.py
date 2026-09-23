@@ -285,13 +285,20 @@ def validate(model: OrchestraNet, loader: DataLoader, device: str) -> dict:
         targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                    for k, v in targets.items()}
         outputs = model(images, targets)
-        losses = outputs["losses"]
+        losses = outputs.get("losses", {})
 
-        total_loss = sum(
+        loss_tensors = [
             v for k, v in losses.items()
             if "total" in k and isinstance(v, torch.Tensor)
-        )
-        val_loss_meter.update(total_loss.item(), images.shape[0])
+        ]
+        if loss_tensors:
+            total_loss = torch.stack(loss_tensors).sum().item()
+        elif "total" in losses and isinstance(losses["total"], (int, float)):
+            total_loss = float(losses["total"])
+        else:
+            total_loss = 0.0
+
+        val_loss_meter.update(total_loss, images.shape[0])
         route_dist[outputs["routing"]["routing_level"]] += 1
 
     return {"val_loss": val_loss_meter.avg, "routing_distribution": route_dist}
@@ -453,6 +460,8 @@ def main():
 
             checkpoint_path = os.path.join(args.save_dir, f"orchestranet_epoch{epoch}.pt")
             torch.save(ckpt_data, checkpoint_path)
+            latest_path = os.path.join(args.save_dir, "orchestranet_latest.pt")
+            torch.save(ckpt_data, latest_path)
             logger.info(f"  💾 Saved checkpoint: {checkpoint_path}")
 
             if args.drive_save_dir:
