@@ -152,12 +152,11 @@ class OrchestraNet(nn.Module):
             m1_out = model_outputs["m1"]
             obj = m1_out["objectness"]
             if obj.dim() == 3:
-                scores_val = torch.sigmoid(obj).squeeze(-1)
-            elif obj.dim() == 2:
-                # If values already probabilities in [0, 1], use as-is; otherwise apply sigmoid
-                scores_val = obj if (obj.min() >= 0.0 and obj.max() <= 1.0) else torch.sigmoid(obj)
-            else:
+                obj = obj.squeeze(-1)
+            if obj.numel() > 0 and (obj.min() >= 0.0 and obj.max() <= 1.0):
                 scores_val = obj
+            else:
+                scores_val = torch.sigmoid(obj)
 
             detections = {
                 "boxes": m1_out["decoded_boxes"],

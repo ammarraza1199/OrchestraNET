@@ -213,7 +213,22 @@ class M1PrimaryDetector(BaseMicroModel):
             try:
                 from ultralytics import YOLO
                 yolo_file = f"{model_name}.pt" if not model_name.endswith(".pt") else model_name
-                self.pretrained_detector = YOLO(yolo_file)
+                yolo = YOLO(yolo_file)
+                if str(device) != "cpu":
+                    try:
+                        yolo.to(device)
+                    except Exception:
+                        pass
+                # CRITICAL: Ultralytics' YOLO class subclasses nn.Module but overrides
+                # .train(trainer=None, **overrides) to launch a full 100-epoch training job!
+                # When PyTorch calls model.eval() -> module.train(False), YOLO starts training!
+                # To prevent this:
+                # 1. Override yolo.train and yolo.eval on this instance to be no-ops
+                # 2. Store yolo using object.__setattr__ so it is NOT added to self._modules
+                yolo.train = lambda *args, **kwargs: None
+                yolo.eval = lambda *args, **kwargs: None
+                object.__setattr__(self, "pretrained_detector", yolo)
+                object.__setattr__(self, "_pretrained_type", "yolo")
                 print(f"✅ M1 Primary Detector: Loaded pre-trained Ultralytics {yolo_file}")
                 return
             except ImportError:
@@ -224,13 +239,15 @@ class M1PrimaryDetector(BaseMicroModel):
             import torchvision.models.detection as d
             detector = d.retinanet_resnet50_fpn_v2(weights=d.RetinaNet_ResNet50_FPN_V2_Weights.DEFAULT)
             detector.eval()
-            self.pretrained_detector = detector.to(device)
+            object.__setattr__(self, "pretrained_detector", detector.to(device))
+            object.__setattr__(self, "_pretrained_type", "torchvision")
             print("✅ M1 Primary Detector: Loaded pre-trained Torchvision RetinaNet ResNet-50 FPN V2 (65.5% mAP@50)")
         else:
             import torchvision.models.detection as d
             detector = d.fasterrcnn_mobilenet_v3_large_fpn(weights=d.FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
             detector.eval()
-            self.pretrained_detector = detector.to(device)
+            object.__setattr__(self, "pretrained_detector", detector.to(device))
+            object.__setattr__(self, "_pretrained_type", "torchvision")
             print("✅ M1 Primary Detector: Loaded pre-trained Torchvision Faster-RCNN MobileNetV3 FPN (58.2% mAP@50)")
 
     def forward(self, features, context=None, images=None):
@@ -280,8 +297,8 @@ class M1PrimaryDetector(BaseMicroModel):
         rgb_images = (images * inv_std + inv_mean).clamp(0.0, 1.0)
 
         # Check if ultralytics YOLO model
-        if hasattr(self.pretrained_detector, "predict") or "YOLO" in type(self.pretrained_detector).__name__:
-            results = self.pretrained_detector(rgb_images, verbose=False)
+        if getattr(self, "_pretrained_type", "") == "yolo" or hasattr(self.pretrained_detector, "predict"):
+            results = self.pretrained_detector.predict(rgb_images, conf=0.005, verbose=False)
             for b in range(B):
                 r = results[b]
                 if hasattr(r, "boxes") and len(r.boxes) > 0:
