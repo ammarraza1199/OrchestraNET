@@ -433,6 +433,29 @@ def generate_all_tables(complexity, speed_res, simple_res, complex_res, out_dir:
 
     print("\n✅ All 4 PhD publication tables generated successfully in:", out_dir)
 
+    # --------------------------------------------------------------------------
+    # TERMINAL OUTPUT: Direct Screen Verification Table
+    # --------------------------------------------------------------------------
+    print("\n" + "=" * 74)
+    print("🎯 ORCHESTRANET BENCHMARK VERIFICATION RESULTS (TERMINAL DISPLAY)")
+    print("=" * 74)
+    print(f"{'Metric':<22} | {'Simple Route':<14} | {'Full Ensemble':<14} | {'Delta (Δ)':<12}")
+    print("-" * 74)
+    print(f"{'mAP@50':<22} | {simple_res['mAP@50']*100:<13.2f}% | {complex_res['mAP@50']*100:<13.2f}% | {(complex_res['mAP@50']-simple_res['mAP@50'])*100:+.2f}%")
+    print(f"{'mAP@50:95':<22} | {simple_res['mAP@50:95']*100:<13.2f}% | {complex_res['mAP@50:95']*100:<13.2f}% | {(complex_res['mAP@50:95']-simple_res['mAP@50:95'])*100:+.2f}%")
+    print(f"{'AP_75 (Strict)':<22} | {simple_res['mAP@75']*100:<13.2f}% | {complex_res['mAP@75']*100:<13.2f}% | {(complex_res['mAP@75']-simple_res['mAP@75'])*100:+.2f}%")
+    print(f"{'AP_Small (AP_s)':<22} | {simple_res['AP_small']*100:<13.2f}% | {complex_res['AP_small']*100:<13.2f}% | {(complex_res['AP_small']-simple_res['AP_small'])*100:+.2f}%")
+    print(f"{'AP_Medium (AP_m)':<22} | {simple_res['AP_medium']*100:<13.2f}% | {complex_res['AP_medium']*100:<13.2f}% | {(complex_res['AP_medium']-simple_res['AP_medium'])*100:+.2f}%")
+    print(f"{'AP_Large (AP_l)':<22} | {simple_res['AP_large']*100:<13.2f}% | {complex_res['AP_large']*100:<13.2f}% | {(complex_res['AP_large']-simple_res['AP_large'])*100:+.2f}%")
+    print(f"{'AR@100 (Max Recall)':<22} | {simple_res['AR@100']*100:<13.2f}% | {complex_res['AR@100']*100:<13.2f}% | {(complex_res['AR@100']-simple_res['AR@100'])*100:+.2f}%")
+    print(f"{'AR_Small (Small Rec)':<22} | {simple_res['AR_small']*100:<13.2f}% | {complex_res['AR_small']*100:<13.2f}% | {(complex_res['AR_small']-simple_res['AR_small'])*100:+.2f}%")
+    print(f"{'Latency (ms)':<22} | {simple_res['speed']['mean_ms']:<13.2f}ms| {complex_res['speed']['mean_ms']:<13.2f}ms| {complex_res['speed']['mean_ms']-simple_res['speed']['mean_ms']:+.2f}ms")
+    print(f"{'Throughput (FPS)':<22} | {simple_res['speed']['fps']:<13.1f}  | {complex_res['speed']['fps']:<13.1f}  | {complex_res['speed']['fps']-simple_res['speed']['fps']:+.1f}")
+    print("-" * 74)
+    print(f"{'Sparse Scenes (<5)':<22} | {simple_res['density_split']['sparse']['mAP@50']*100:<13.2f}% | {complex_res['density_split']['sparse']['mAP@50']*100:<13.2f}% | {(complex_res['density_split']['sparse']['mAP@50']-simple_res['density_split']['sparse']['mAP@50'])*100:+.2f}%")
+    print(f"{'Crowded Scenes (>=10)':<22} | {simple_res['density_split']['crowded']['mAP@50']*100:<13.2f}% | {complex_res['density_split']['crowded']['mAP@50']*100:<13.2f}% | {(complex_res['density_split']['crowded']['mAP@50']-simple_res['density_split']['crowded']['mAP@50'])*100:+.2f}%")
+    print("=" * 74 + "\n")
+
 
 # ==============================================================================
 # Main Execution Pipeline
