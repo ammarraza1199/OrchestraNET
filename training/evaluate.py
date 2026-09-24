@@ -166,9 +166,17 @@ def main():
         print("⚠️  Using random weights")
     model = model.to(args.device)
 
-    dataset = COCODetectionDataset(
-        root=os.path.join(args.data_root, "val2017"),
-        ann_file=os.path.join(args.data_root, "annotations", "instances_val2017.json"))
+    ann_file = os.path.join(args.data_root, "annotations", "instances_val2017.json")
+    val_root = os.path.join(args.data_root, "val2017")
+    if not os.path.exists(ann_file):
+        for sub in ["coco", "coco/coco"]:
+            candidate_ann = os.path.join(args.data_root, sub, "annotations", "instances_val2017.json")
+            if os.path.exists(candidate_ann):
+                ann_file = candidate_ann
+                val_root = os.path.join(args.data_root, sub, "val2017")
+                break
+
+    dataset = COCODetectionDataset(root=val_root, ann_file=ann_file)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     results = evaluate(model, loader, args.device, args.conf_thresh,

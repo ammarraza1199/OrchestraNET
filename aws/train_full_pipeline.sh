@@ -86,6 +86,14 @@ else
 fi
 echo ""
 
+# Resolve COCO dataset path
+COCO_DATA="${DATA_ROOT}"
+if [ -d "${DATA_ROOT}/coco/coco" ]; then
+    COCO_DATA="${DATA_ROOT}/coco/coco"
+elif [ -d "${DATA_ROOT}/coco" ]; then
+    COCO_DATA="${DATA_ROOT}/coco"
+fi
+
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PIPELINE_LOG="${LOG_DIR}/pipeline_${TIMESTAMP}.log"
 mkdir -p "${LOG_DIR}" "${SAVE_DIR}"
@@ -125,19 +133,13 @@ if [ "${START_PHASE_NUM}" -le 1 ]; then
         # Map correct dataset directory per micro-model
         model_data="${DATA_ROOT}"
         if [ "${model_id}" = "m1" ] || [ "${model_id}" = "m3" ]; then
-            if [ -d "${DATA_ROOT}/coco/coco" ]; then
-                model_data="${DATA_ROOT}/coco/coco"
-            elif [ -d "${DATA_ROOT}/coco" ]; then
-                model_data="${DATA_ROOT}/coco"
-            fi
+            model_data="${COCO_DATA}"
         elif [ "${model_id}" = "m2" ] || [ "${model_id}" = "m6" ]; then
             # M2 (Occlusion) & M6 (Amodal) use KINS for real occlusion masks (finishes in ~18 & ~26 mins)
             if [ -d "${DATA_ROOT}/KINS" ]; then
                 model_data="${DATA_ROOT}/KINS"
-            elif [ -d "${DATA_ROOT}/coco/coco" ]; then
-                model_data="${DATA_ROOT}/coco/coco"
-            elif [ -d "${DATA_ROOT}/coco" ]; then
-                model_data="${DATA_ROOT}/coco"
+            else
+                model_data="${COCO_DATA}"
             fi
         elif [ "${model_id}" = "m4" ]; then
             if [ -d "${DATA_ROOT}/kitti" ]; then
@@ -208,12 +210,7 @@ fi
 if [ "${START_PHASE_NUM}" -le 2 ]; then
     log "═══ Phase 2: Joint Training ═══"
 
-    joint_data="${DATA_ROOT}"
-    if [ -d "${DATA_ROOT}/coco/coco" ]; then
-        joint_data="${DATA_ROOT}/coco/coco"
-    elif [ -d "${DATA_ROOT}/coco" ]; then
-        joint_data="${DATA_ROOT}/coco"
-    fi
+    joint_data="${COCO_DATA}"
 
     joint_drive_args=()
     if [ -n "${DRIVE_SAVE_DIR}" ]; then
@@ -276,7 +273,7 @@ if [ "${START_PHASE_NUM}" -le 3 ]; then
 
     python training/train_router.py \
         --weights "${JOINT_CKPT}" \
-        --data-root "${DATA_ROOT}" \
+        --data-root "${COCO_DATA}" \
         --epochs 20 \
         --batch-size 8 \
         --device "${DEVICE}" \
@@ -306,7 +303,7 @@ if [ "${START_PHASE_NUM}" -le 4 ]; then
 
     python training/evaluate.py \
         --weights "${EVAL_CKPT}" \
-        --data-root "${DATA_ROOT}" \
+        --data-root "${COCO_DATA}" \
         --device "${DEVICE}" \
         --save-results "./results" \
         2>&1 | tee -a "${PIPELINE_LOG}"
@@ -316,7 +313,7 @@ if [ "${START_PHASE_NUM}" -le 4 ]; then
         log "   Running ablation: disable ${ablate_model}..."
         python training/evaluate.py \
             --weights "${EVAL_CKPT}" \
-            --data-root "${DATA_ROOT}" \
+            --data-root "${COCO_DATA}" \
             --device "${DEVICE}" \
             --ablate "${ablate_model}" \
             --save-results "./results" \

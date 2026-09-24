@@ -126,29 +126,6 @@ class RouterRLTrainer:
         }
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", required=True)
-    parser.add_argument("--data-root", default="./data/coco")
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--save-dir", default="./checkpoints/router")
-    parser.add_argument("--log-dir", default="./logs/router")
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--drive-save-dir", default=None,
-                        help="Google Drive directory to synchronise checkpoints and logs to")
-    parser.add_argument("--acc-weight", type=float, default=1.3,
-                        help="Weight for accuracy reward (default: 1.3)")
-    parser.add_argument("--lat-weight", type=float, default=0.2,
-                        help="Weight for latency penalty (default: 0.2)")
-    parser.add_argument("--eff-weight", type=float, default=0.05,
-                        help="Weight for efficiency bonus (default: 0.05)")
-    args = parser.parse_args()
-    os.makedirs(args.save_dir, exist_ok=True)
-
-
 def sync_file_to_drive(
     src_path: str | Path,
     drive_dir: str | Path,
@@ -184,6 +161,29 @@ def sync_file_to_drive(
             logger.error(msg)
         return None
 
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weights", required=True)
+    parser.add_argument("--data-root", default="./data/coco")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--save-dir", default="./checkpoints/router")
+    parser.add_argument("--log-dir", default="./logs/router")
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--drive-save-dir", default=None,
+                        help="Google Drive directory to synchronise checkpoints and logs to")
+    parser.add_argument("--acc-weight", type=float, default=1.3,
+                        help="Weight for accuracy reward (default: 1.3)")
+    parser.add_argument("--lat-weight", type=float, default=0.2,
+                        help="Weight for latency penalty (default: 0.2)")
+    parser.add_argument("--eff-weight", type=float, default=0.05,
+                        help="Weight for efficiency bonus (default: 0.05)")
+    args = parser.parse_args()
+    os.makedirs(args.save_dir, exist_ok=True)
+
     logger = TrainingLogger(log_dir=args.log_dir, tb_enabled=True)
 
     logger.info("🎼 OrchestraNet — Router RL Training")
@@ -193,9 +193,19 @@ def sync_file_to_drive(
     state = torch.load(args.weights, map_location=args.device, weights_only=False)
     model.load_state_dict(state.get("model_state_dict", state))
 
+    ann_file = os.path.join(args.data_root, "annotations", "instances_train2017.json")
+    train_root = os.path.join(args.data_root, "train2017")
+    if not os.path.exists(ann_file):
+        for sub in ["coco", "coco/coco"]:
+            candidate_ann = os.path.join(args.data_root, sub, "annotations", "instances_train2017.json")
+            if os.path.exists(candidate_ann):
+                ann_file = candidate_ann
+                train_root = os.path.join(args.data_root, sub, "train2017")
+                break
+
     dataset = COCODetectionDataset(
-        root=os.path.join(args.data_root, "train2017"),
-        ann_file=os.path.join(args.data_root, "annotations", "instances_train2017.json"),
+        root=train_root,
+        ann_file=ann_file,
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,

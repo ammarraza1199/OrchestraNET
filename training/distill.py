@@ -318,9 +318,19 @@ def main():
     print(f"   Student params: {sum(p.numel() for p in student.parameters()):,}")
 
     # Dataset
+    ann_file = os.path.join(args.data_root, "annotations", "instances_train2017.json")
+    train_root = os.path.join(args.data_root, "train2017")
+    if not os.path.exists(ann_file):
+        for sub in ["coco", "coco/coco"]:
+            candidate_ann = os.path.join(args.data_root, sub, "annotations", "instances_train2017.json")
+            if os.path.exists(candidate_ann):
+                ann_file = candidate_ann
+                train_root = os.path.join(args.data_root, sub, "train2017")
+                break
+
     dataset = COCODetectionDataset(
-        root=os.path.join(args.data_root, "train2017"),
-        ann_file=os.path.join(args.data_root, "annotations", "instances_train2017.json"),
+        root=train_root,
+        ann_file=ann_file,
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
