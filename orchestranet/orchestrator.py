@@ -195,6 +195,14 @@ class OrchestraNet(nn.Module):
                     cal_mod = 1.0 + 0.05 * (cal.squeeze(-1).unsqueeze(1) - 0.5)
                     detections["scores"] = (detections["scores"] * cal_mod).clamp(0.0, 1.0)
 
+            # Apply M3 small object enhancement if M3 was active
+            if "m3" in model_outputs and detections["boxes"].shape[1] > 0:
+                box_w = (detections["boxes"][:, :, 2] - detections["boxes"][:, :, 0]).clamp(min=0)
+                box_h = (detections["boxes"][:, :, 3] - detections["boxes"][:, :, 1]).clamp(min=0)
+                small_mask = (box_w * box_h) < 1024.0  # COCO small object threshold (32x32)
+                if small_mask.any():
+                    detections["scores"][small_mask] = (detections["scores"][small_mask] * 1.05).clamp(0.0, 1.0)
+
         else:
             detections = {"boxes": torch.empty(0, 4), "scores": torch.empty(0),
                           "class_logits": torch.empty(0)}

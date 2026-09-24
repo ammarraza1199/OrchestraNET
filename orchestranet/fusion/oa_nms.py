@@ -127,26 +127,30 @@ def occlusion_aware_nms(
 
         overlap_cands = cand_indices[overlap_mask]
 
-        # Vectorized occlusion-pair detection
+        # Vectorized occlusion-pair detection using M2 (occlusion), M4 (depth), and scale equivariance
         is_occ_pair = torch.zeros(len(overlap_cands), dtype=torch.bool, device=boxes.device)
         if occlusion_scores is not None:
             vis_diff = torch.abs(occlusion_scores[i] - occlusion_scores[overlap_cands])
-            is_occ_pair = is_occ_pair | (vis_diff > occlusion_threshold)
+            is_occ_pair = is_occ_pair | (vis_diff > 0.05)
 
         if depth_values is not None:
             depth_diff = torch.abs(depth_values[i] - depth_values[overlap_cands])
-            is_occ_pair = is_occ_pair | (depth_diff > 0.15)
+            is_occ_pair = is_occ_pair | (depth_diff > 0.04)
 
-        # Duplicate candidates: overlap AND NOT occlusion pair -> suppress
+        # Scale difference detection: small object overlapping large object (e.g. person holding cup/bag)
+        area_i = (boxes[i, 2] - boxes[i, 0]).clamp(min=1) * (boxes[i, 3] - boxes[i, 1]).clamp(min=1)
+        area_cands = (boxes[overlap_cands, 2] - boxes[overlap_cands, 0]).clamp(min=1) * (boxes[overlap_cands, 3] - boxes[overlap_cands, 1]).clamp(min=1)
+        scale_ratio = torch.max(area_i / area_cands, area_cands / area_i)
+        is_occ_pair = is_occ_pair | (scale_ratio > 1.8)
+
+        # Occlusion pair candidates: preserved with full confidence!
+        # Duplicate candidates: apply Gaussian Soft-NMS decay
         dup_cands = overlap_cands[~is_occ_pair]
         if len(dup_cands) > 0:
-            suppressed[dup_cands] = True
-
-        # Occlusion pair candidates: keep both detections!
-        # (This is the primary novelty of OA-NMS: preserving real occluded instances that standard NMS suppresses)
-        occ_cands = overlap_cands[is_occ_pair]
-        if len(occ_cands) > 0 and occlusion_scores is not None:
-            scores[occ_cands] = scores[occ_cands] * torch.clamp(0.90 + 0.10 * occlusion_scores[occ_cands], min=0.90, max=1.0)
+            ious = iou_matrix[i, dup_cands]
+            decay = torch.exp(-(ious ** 2) / 0.5)
+            scores[dup_cands] = scores[dup_cands] * decay
+            suppressed[dup_cands] = scores[dup_cands] < score_threshold
 
     keep = torch.tensor(keep, dtype=torch.long, device=boxes.device)
 
