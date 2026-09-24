@@ -252,7 +252,8 @@ class M1PrimaryDetector(BaseMicroModel):
 
     def forward(self, features, context=None, images=None):
         if getattr(self, "pretrained_detector", None) is not None and images is not None:
-            return self._forward_pretrained(images)
+            iou_thresh = context.get("m1_iou", 0.88) if context else 0.88
+            return self._forward_pretrained(images, iou_thresh=iou_thresh)
 
         all_boxes, all_obj, all_cls = [], [], []
         for lvl, (feat, head) in enumerate(zip(features, self.heads)):
@@ -272,7 +273,7 @@ class M1PrimaryDetector(BaseMicroModel):
             "class_logits": torch.cat(all_cls, 1),
         }
 
-    def _forward_pretrained(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
+    def _forward_pretrained(self, images: torch.Tensor, iou_thresh: float = 0.88) -> dict[str, torch.Tensor]:
         """Forward pass using an established pre-trained detection backend."""
         B = images.shape[0]
         device = images.device
@@ -298,7 +299,7 @@ class M1PrimaryDetector(BaseMicroModel):
 
         # Check if ultralytics YOLO model
         if getattr(self, "_pretrained_type", "") == "yolo" or hasattr(self.pretrained_detector, "predict"):
-            results = self.pretrained_detector.predict(rgb_images, conf=0.005, verbose=False)
+            results = self.pretrained_detector.predict(rgb_images, conf=0.005, iou=iou_thresh, verbose=False)
             for b in range(B):
                 r = results[b]
                 if hasattr(r, "boxes") and len(r.boxes) > 0:

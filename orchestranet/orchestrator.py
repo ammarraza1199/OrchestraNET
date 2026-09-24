@@ -111,7 +111,7 @@ class OrchestraNet(nn.Module):
         if (getattr(self, "force_route", None) is not None and 
             str(self.force_route).lower() == "simple" and 
             getattr(self.models["m1"], "pretrained_detector", None) is not None):
-            m1_out = self.models["m1"](features=None, context={}, images=images)
+            m1_out = self.models["m1"](features=None, context={"m1_iou": 0.70}, images=images)
             obj = m1_out["objectness"]
             if obj.dim() == 3:
                 obj = obj.squeeze(-1)
