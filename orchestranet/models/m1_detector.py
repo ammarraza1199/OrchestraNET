@@ -261,17 +261,35 @@ class M1PrimaryDetector(BaseMicroModel):
         device = images.device
         all_boxes, all_scores, all_logits = [], [], []
 
+        # Canonical COCO 91-id to contiguous 0-79 id mapping for Torchvision
+        COCO_91_TO_80 = {
+            1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 9,
+            11: 10, 13: 11, 14: 12, 15: 13, 16: 14, 17: 15, 18: 16, 19: 17, 20: 18,
+            21: 19, 22: 20, 23: 21, 24: 22, 25: 23, 27: 24, 28: 25, 31: 26, 32: 27,
+            33: 28, 34: 29, 35: 30, 36: 31, 37: 32, 38: 33, 39: 34, 40: 35, 41: 36,
+            42: 37, 43: 38, 44: 39, 46: 40, 47: 41, 48: 42, 49: 43, 50: 44, 51: 45,
+            52: 46, 53: 47, 54: 48, 55: 49, 56: 50, 57: 51, 58: 52, 59: 53, 60: 54,
+            61: 55, 62: 56, 63: 57, 64: 58, 65: 59, 67: 60, 70: 61, 72: 62, 73: 63,
+            74: 64, 75: 65, 76: 66, 77: 67, 78: 68, 79: 69, 80: 70, 81: 71, 82: 72,
+            84: 73, 85: 74, 86: 75, 87: 76, 88: 77, 89: 78, 90: 79
+        }
+
+        # Un-normalize from ImageNet mean/std back to standard [0, 1] RGB
+        inv_mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+        inv_std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        rgb_images = (images * inv_std + inv_mean).clamp(0.0, 1.0)
+
         # Check if ultralytics YOLO model
         if hasattr(self.pretrained_detector, "predict") or "YOLO" in type(self.pretrained_detector).__name__:
-            results = self.pretrained_detector(images, verbose=False)
+            results = self.pretrained_detector(rgb_images, verbose=False)
             for b in range(B):
                 r = results[b]
                 if hasattr(r, "boxes") and len(r.boxes) > 0:
                     b_boxes = r.boxes.xyxy.to(device)
                     b_scores = r.boxes.conf.to(device)
-                    b_cls = r.boxes.cls.long().to(device)
+                    b_cls = r.boxes.cls.long().clamp(0, self.num_classes - 1).to(device)
                     b_logits = torch.full((len(b_scores), self.num_classes), -8.0, device=device)
-                    b_logits.scatter_(1, b_cls.unsqueeze(1).clamp(0, self.num_classes - 1), 8.0)
+                    b_logits.scatter_(1, b_cls.unsqueeze(1), 8.0)
                 else:
                     b_boxes = torch.empty((0, 4), device=device)
                     b_scores = torch.empty((0,), device=device)
@@ -281,7 +299,7 @@ class M1PrimaryDetector(BaseMicroModel):
                 all_logits.append(b_logits)
         else:
             # Torchvision detection model
-            img_list = [images[b] for b in range(B)]
+            img_list = [rgb_images[b] for b in range(B)]
             with torch.no_grad():
                 results = self.pretrained_detector(img_list)
             for b in range(B):
@@ -289,7 +307,8 @@ class M1PrimaryDetector(BaseMicroModel):
                 if len(r["boxes"]) > 0:
                     b_boxes = r["boxes"].to(device)
                     b_scores = r["scores"].to(device)
-                    b_cls = (r["labels"] - 1).long().clamp(0, self.num_classes - 1).to(device)
+                    mapped_labels = [COCO_91_TO_80.get(int(x.item()), 0) for x in r["labels"]]
+                    b_cls = torch.tensor(mapped_labels, dtype=torch.long, device=device)
                     b_logits = torch.full((len(b_scores), self.num_classes), -8.0, device=device)
                     b_logits.scatter_(1, b_cls.unsqueeze(1), 8.0)
                 else:
