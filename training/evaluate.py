@@ -167,12 +167,30 @@ def main():
     model = OrchestraNet(num_classes=80, pretrained_backbone=False)
     if args.weights and Path(args.weights).exists():
         state = torch.load(args.weights, map_location=args.device, weights_only=False)
-        if args.use_ema and "ema_state_dict" in state:
-            model.load_state_dict(state["ema_state_dict"], strict=False)
-            print(f"✅ Loaded EMA weights: {args.weights}")
+        
+        # 1. Load full base model weights
+        if isinstance(state, dict) and "model_state_dict" in state:
+            model.load_state_dict(state["model_state_dict"], strict=False)
+            print(f"✅ Loaded base model weights from: {args.weights}")
+        elif isinstance(state, dict) and any(k.startswith("backbone.") or k.startswith("models.") for k in state):
+            model.load_state_dict(state, strict=False)
+            print(f"✅ Loaded raw weights from: {args.weights}")
         else:
-            model.load_state_dict(state.get("model_state_dict", state), strict=False)
-            print(f"✅ Loaded model weights: {args.weights}")
+            print(f"⚠️ Unrecognized checkpoint format in {args.weights}")
+
+        # 2. Overlay EMA shadow weights if available and requested
+        if args.use_ema and isinstance(state, dict) and "ema_state_dict" in state:
+            ema_data = state["ema_state_dict"]
+            shadow = ema_data.get("shadow", ema_data) if isinstance(ema_data, dict) else None
+            if shadow and isinstance(shadow, dict):
+                m_state = model.state_dict()
+                applied = 0
+                for k, v in shadow.items():
+                    if k in m_state and m_state[k].shape == v.shape:
+                        m_state[k].copy_(v)
+                        applied += 1
+                if applied > 0:
+                    print(f"✅ Applied EMA shadow smoothing to {applied} parameters")
     else:
         print("⚠️  Using random weights")
 
