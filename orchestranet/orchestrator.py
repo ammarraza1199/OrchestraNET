@@ -132,7 +132,7 @@ class OrchestraNet(nn.Module):
 
         # M1 always runs first (other models may depend on it)
         if "m1" in active_models:
-            model_outputs["m1"] = self.models["m1"](fpn_features)
+            model_outputs["m1"] = self.models["m1"](fpn_features, context=context, images=images)
 
         # M2 runs next (M6, M7 depend on occlusion info)
         if "m2" in active_models:
@@ -150,9 +150,18 @@ class OrchestraNet(nn.Module):
         # === Stage 4: Fusion ===
         if "m1" in model_outputs:
             m1_out = model_outputs["m1"]
+            obj = m1_out["objectness"]
+            if obj.dim() == 3:
+                scores_val = torch.sigmoid(obj).squeeze(-1)
+            elif obj.dim() == 2:
+                # If values already probabilities in [0, 1], use as-is; otherwise apply sigmoid
+                scores_val = obj if (obj.min() >= 0.0 and obj.max() <= 1.0) else torch.sigmoid(obj)
+            else:
+                scores_val = obj
+
             detections = {
                 "boxes": m1_out["decoded_boxes"],
-                "scores": torch.sigmoid(m1_out["objectness"]).squeeze(-1),
+                "scores": scores_val,
                 "class_logits": m1_out["class_logits"],
             }
 

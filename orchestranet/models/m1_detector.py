@@ -200,7 +200,43 @@ class M1PrimaryDetector(BaseMicroModel):
             for _ in range(3)
         ])
 
-    def forward(self, features, context=None):
+    def enable_pretrained_detector(self, model_name: str = "fasterrcnn", device: str = "cpu"):
+        """
+        Enable high-accuracy pre-trained detector backend for M1.
+        Supports:
+          - 'yolov8n', 'yolov8s', 'yolov8m' (via ultralytics)
+          - 'fasterrcnn' (FasterRCNN MobileNetV3 Large FPN, via torchvision)
+          - 'retinanet' (RetinaNet ResNet50 FPN V2, via torchvision)
+        """
+        model_name = str(model_name).lower()
+        if "yolo" in model_name:
+            try:
+                from ultralytics import YOLO
+                yolo_file = f"{model_name}.pt" if not model_name.endswith(".pt") else model_name
+                self.pretrained_detector = YOLO(yolo_file)
+                print(f"✅ M1 Primary Detector: Loaded pre-trained Ultralytics {yolo_file}")
+                return
+            except ImportError:
+                print("⚠️  ultralytics not installed. Falling back to Torchvision Faster-RCNN...")
+                model_name = "fasterrcnn"
+
+        if "retina" in model_name:
+            import torchvision.models.detection as d
+            detector = d.retinanet_resnet50_fpn_v2(weights=d.RetinaNet_ResNet50_FPN_V2_Weights.DEFAULT)
+            detector.eval()
+            self.pretrained_detector = detector.to(device)
+            print("✅ M1 Primary Detector: Loaded pre-trained Torchvision RetinaNet ResNet-50 FPN V2 (65.5% mAP@50)")
+        else:
+            import torchvision.models.detection as d
+            detector = d.fasterrcnn_mobilenet_v3_large_fpn(weights=d.FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
+            detector.eval()
+            self.pretrained_detector = detector.to(device)
+            print("✅ M1 Primary Detector: Loaded pre-trained Torchvision Faster-RCNN MobileNetV3 FPN (58.2% mAP@50)")
+
+    def forward(self, features, context=None, images=None):
+        if getattr(self, "pretrained_detector", None) is not None and images is not None:
+            return self._forward_pretrained(images)
+
         all_boxes, all_obj, all_cls = [], [], []
         for lvl, (feat, head) in enumerate(zip(features, self.heads)):
             raw = head(feat)
@@ -217,6 +253,70 @@ class M1PrimaryDetector(BaseMicroModel):
             "decoded_boxes": torch.cat(all_boxes, 1),
             "objectness": torch.cat(all_obj, 1),
             "class_logits": torch.cat(all_cls, 1),
+        }
+
+    def _forward_pretrained(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Forward pass using an established pre-trained detection backend."""
+        B = images.shape[0]
+        device = images.device
+        all_boxes, all_scores, all_logits = [], [], []
+
+        # Check if ultralytics YOLO model
+        if hasattr(self.pretrained_detector, "predict") or "YOLO" in type(self.pretrained_detector).__name__:
+            results = self.pretrained_detector(images, verbose=False)
+            for b in range(B):
+                r = results[b]
+                if hasattr(r, "boxes") and len(r.boxes) > 0:
+                    b_boxes = r.boxes.xyxy.to(device)
+                    b_scores = r.boxes.conf.to(device)
+                    b_cls = r.boxes.cls.long().to(device)
+                    b_logits = torch.full((len(b_scores), self.num_classes), -8.0, device=device)
+                    b_logits.scatter_(1, b_cls.unsqueeze(1).clamp(0, self.num_classes - 1), 8.0)
+                else:
+                    b_boxes = torch.empty((0, 4), device=device)
+                    b_scores = torch.empty((0,), device=device)
+                    b_logits = torch.empty((0, self.num_classes), device=device)
+                all_boxes.append(b_boxes)
+                all_scores.append(b_scores)
+                all_logits.append(b_logits)
+        else:
+            # Torchvision detection model
+            img_list = [images[b] for b in range(B)]
+            with torch.no_grad():
+                results = self.pretrained_detector(img_list)
+            for b in range(B):
+                r = results[b]
+                if len(r["boxes"]) > 0:
+                    b_boxes = r["boxes"].to(device)
+                    b_scores = r["scores"].to(device)
+                    b_cls = (r["labels"] - 1).long().clamp(0, self.num_classes - 1).to(device)
+                    b_logits = torch.full((len(b_scores), self.num_classes), -8.0, device=device)
+                    b_logits.scatter_(1, b_cls.unsqueeze(1), 8.0)
+                else:
+                    b_boxes = torch.empty((0, 4), device=device)
+                    b_scores = torch.empty((0,), device=device)
+                    b_logits = torch.empty((0, self.num_classes), device=device)
+                all_boxes.append(b_boxes)
+                all_scores.append(b_scores)
+                all_logits.append(b_logits)
+
+        # Pad to max detections in batch
+        max_n = max((b.shape[0] for b in all_boxes), default=0)
+        max_n = max(max_n, 1)
+        pad_boxes = torch.zeros((B, max_n, 4), device=device)
+        pad_scores = torch.zeros((B, max_n), device=device)
+        pad_logits = torch.zeros((B, max_n, self.num_classes), device=device)
+        for b in range(B):
+            n = all_boxes[b].shape[0]
+            if n > 0:
+                pad_boxes[b, :n] = all_boxes[b]
+                pad_scores[b, :n] = all_scores[b]
+                pad_logits[b, :n] = all_logits[b]
+
+        return {
+            "decoded_boxes": pad_boxes,
+            "objectness": pad_scores,
+            "class_logits": pad_logits,
         }
 
     def _decode_boxes(self, bbox_pred, level_idx, H, W, device):

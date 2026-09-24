@@ -43,6 +43,8 @@ def parse_args():
     parser.add_argument("--ablate", default=None, help="Model to disable for ablation (e.g., m2)")
     parser.add_argument("--force-route", default=None, choices=["simple", "medium", "complex"],
                         help="Force all images through a specific routing level (e.g., 'simple' for >83 FPS benchmark)")
+    parser.add_argument("--pretrained-m1", default=None,
+                        help="Enable high-accuracy pre-trained detector for M1 (e.g. 'fasterrcnn', 'retinanet', 'yolov8s', 'yolov8n')")
     parser.add_argument("--save-results", default="./results")
     parser.add_argument("--num-images", type=int, default=None, help="Limit eval images")
     return parser.parse_args()
@@ -228,6 +230,9 @@ def main():
         r_dict = r_state.get("router_state_dict", r_state)
         model.router.load_state_dict(r_dict, strict=False)
         print(f"✅ Loaded trained router: {router_path}")
+
+    if args.pretrained_m1:
+        model.models["m1"].enable_pretrained_detector(args.pretrained_m1, device=args.device)
 
     model = model.to(args.device)
 
