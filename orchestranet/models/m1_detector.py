@@ -297,9 +297,9 @@ class M1PrimaryDetector(BaseMicroModel):
         inv_std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
         rgb_images = (images * inv_std + inv_mean).clamp(0.0, 1.0)
 
-        # Check if ultralytics YOLO model
+        # Check if ultralytics YOLO model (conf=0.001 is standard COCO benchmark evaluation threshold)
         if getattr(self, "_pretrained_type", "") == "yolo" or hasattr(self.pretrained_detector, "predict"):
-            results = self.pretrained_detector.predict(rgb_images, conf=0.005, iou=iou_thresh, verbose=False)
+            results = self.pretrained_detector.predict(rgb_images, conf=0.001, iou=iou_thresh, verbose=False)
             for b in range(B):
                 r = results[b]
                 if hasattr(r, "boxes") and len(r.boxes) > 0:

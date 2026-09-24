@@ -224,11 +224,17 @@ class DetectionMetrics:
             pred_boxes = pred["boxes"][pred_mask]
             pred_scores = pred["scores"][pred_mask]
 
-            # Filter by area
+            # Filter by area (both GT and Predictions must match the area scale)
             if len(gt_boxes) > 0:
                 areas = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])
                 area_mask = (areas >= min_area) & (areas < max_area)
                 gt_boxes = gt_boxes[area_mask]
+
+            if len(pred_boxes) > 0 and (min_area > 0 or max_area < float("inf")):
+                p_areas = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
+                p_area_mask = (p_areas >= min_area) & (p_areas < max_area)
+                pred_boxes = pred_boxes[p_area_mask]
+                pred_scores = pred_scores[p_area_mask]
 
             total_gt += len(gt_boxes)
 

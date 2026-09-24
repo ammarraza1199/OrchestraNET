@@ -65,7 +65,7 @@ def occlusion_aware_nms(
         }
 
     # Pre-NMS top-k limit (standard in YOLO/Faster-RCNN) to prevent O(N^2) stalls
-    max_pre_nms = 300
+    max_pre_nms = 3000
     if boxes.shape[0] > max_pre_nms:
         topk_idx = scores.topk(max_pre_nms)[1]
         boxes = boxes[topk_idx]

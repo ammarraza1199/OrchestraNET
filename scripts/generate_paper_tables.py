@@ -50,8 +50,8 @@ def parse_args():
                         help="Number of images for validation metrics (default: 500)")
     parser.add_argument("--batch-size", type=int, default=1,
                         help="Batch size for evaluation (default: 1 for single-stream latency)")
-    parser.add_argument("--conf-thresh", type=float, default=0.01,
-                        help="Confidence threshold for COCO mAP (default: 0.01)")
+    parser.add_argument("--conf-thresh", type=float, default=0.001,
+                        help="Confidence threshold for COCO mAP (default: 0.001 standard)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to run on (cuda or cpu)")
     parser.add_argument("--out-dir", default="./paper_tables",
