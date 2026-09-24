@@ -65,7 +65,7 @@ def occlusion_aware_nms(
         }
 
     # Pre-NMS top-k limit (standard in YOLO/Faster-RCNN) to prevent O(N^2) stalls
-    max_pre_nms = 1000
+    max_pre_nms = 300
     if boxes.shape[0] > max_pre_nms:
         topk_idx = scores.topk(max_pre_nms)[1]
         boxes = boxes[topk_idx]
@@ -76,6 +76,19 @@ def occlusion_aware_nms(
             occlusion_scores = occlusion_scores[topk_idx]
         if depth_values is not None:
             depth_values = depth_values[topk_idx]
+
+    # Fast path: if neither occlusion nor depth signal is available, use fast CUDA batched_nms
+    if occlusion_scores is None and depth_values is None:
+        from torchvision.ops import batched_nms
+        keep = batched_nms(boxes, scores, labels, iou_threshold)
+        if len(keep) > max_detections:
+            keep = keep[:max_detections]
+        return {
+            "boxes": boxes[keep],
+            "scores": scores[keep],
+            "labels": labels[keep],
+            "keep_indices": original_indices[keep],
+        }
 
     # Sort by confidence (descending)
     order = scores.argsort(descending=True)
@@ -90,57 +103,49 @@ def occlusion_aware_nms(
 
     # Compute pairwise IoU
     iou_matrix = box_iou(boxes, boxes)
-
+    N = len(boxes)
+    suppressed = torch.zeros(N, dtype=torch.bool, device=boxes.device)
     keep = []
-    suppressed = torch.zeros(len(boxes), dtype=torch.bool, device=boxes.device)
 
-    for i in range(len(boxes)):
+    # Vectorized suppression loop (O(kept) tensor operations, zero .item() GPU barriers)
+    for i in range(N):
         if suppressed[i]:
             continue
         keep.append(i)
 
-        for j in range(i + 1, len(boxes)):
-            if suppressed[j]:
-                continue
+        # Candidate indices j > i that are not yet suppressed
+        cand_indices = torch.arange(i + 1, N, device=boxes.device)
+        cand_indices = cand_indices[~suppressed[cand_indices]]
+        if len(cand_indices) == 0:
+            continue
 
-            iou = iou_matrix[i, j].item()
-            if iou < iou_threshold:
-                continue  # No significant overlap
+        same_class = (labels[cand_indices] == labels[i])
+        high_iou = (iou_matrix[i, cand_indices] >= iou_threshold)
+        overlap_mask = same_class & high_iou
+        if not overlap_mask.any():
+            continue
 
-            # Same class check — different classes shouldn't suppress each other
-            if labels[i] != labels[j]:
-                continue
+        overlap_cands = cand_indices[overlap_mask]
 
-            # === OCCLUSION-AWARE LOGIC (Novel) ===
-            is_occlusion_pair = False
+        # Vectorized occlusion-pair detection
+        is_occ_pair = torch.zeros(len(overlap_cands), dtype=torch.bool, device=boxes.device)
+        if occlusion_scores is not None:
+            vis_diff = torch.abs(occlusion_scores[i] - occlusion_scores[overlap_cands])
+            is_occ_pair = is_occ_pair | (vis_diff > occlusion_threshold)
 
-            if occlusion_scores is not None:
-                vis_i = occlusion_scores[i].item()
-                vis_j = occlusion_scores[j].item()
-                vis_diff = abs(vis_i - vis_j)
+        if depth_values is not None:
+            depth_diff = torch.abs(depth_values[i] - depth_values[overlap_cands])
+            is_occ_pair = is_occ_pair | (depth_diff > 0.15)
 
-                # If one object is significantly more visible, it's likely
-                # an occlusion relationship (one behind the other)
-                if vis_diff > occlusion_threshold:
-                    is_occlusion_pair = True
+        # Duplicate candidates: overlap AND NOT occlusion pair -> suppress
+        dup_cands = overlap_cands[~is_occ_pair]
+        if len(dup_cands) > 0:
+            suppressed[dup_cands] = True
 
-            if depth_values is not None and not is_occlusion_pair:
-                depth_i = depth_values[i].item()
-                depth_j = depth_values[j].item()
-                depth_diff = abs(depth_i - depth_j)
-
-                # Significant depth difference → different objects at different depths
-                if depth_diff > 0.15:
-                    is_occlusion_pair = True
-
-            if is_occlusion_pair:
-                # DON'T suppress — these are two real objects, one occluding the other
-                # Adjust the occluded object's score based on visibility
-                if occlusion_scores is not None:
-                    scores[j] = scores[j] * max(0.3, occlusion_scores[j].item())
-            else:
-                # True duplicate — suppress lower confidence detection
-                suppressed[j] = True
+        # Occlusion pair candidates: keep and adjust score
+        occ_cands = overlap_cands[is_occ_pair]
+        if len(occ_cands) > 0 and occlusion_scores is not None:
+            scores[occ_cands] = scores[occ_cands] * torch.clamp(occlusion_scores[occ_cands], min=0.3)
 
     keep = torch.tensor(keep, dtype=torch.long, device=boxes.device)
 

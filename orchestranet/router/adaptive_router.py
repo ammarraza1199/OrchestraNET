@@ -77,25 +77,18 @@ class AdaptiveRouter(nn.Module):
         """
         complexity = self.complexity_estimator(features)  # (B, 1)
 
+        logits = self.route_classifier(complexity)
+
         if self.training:
             # Gumbel-Softmax for differentiable routing
-            logits = self.route_classifier(complexity)
             routing_probs = F.gumbel_softmax(
                 logits, tau=self.temperature, hard=True
             )
-            # Determine which level is selected (argmax of one-hot)
             level_idx = routing_probs.argmax(dim=-1)[0].item()
         else:
-            # Hard threshold routing at inference
-            score = complexity[0, 0].item()
-            if score < self.low_thresh:
-                level_idx = 0
-            elif score < self.high_thresh:
-                level_idx = 1
-            else:
-                level_idx = 2
-            routing_probs = torch.zeros(1, 3, device=complexity.device)
-            routing_probs[0, level_idx] = 1.0
+            # At inference, use the learned route classifier
+            routing_probs = F.softmax(logits, dim=-1)
+            level_idx = routing_probs.argmax(dim=-1)[0].item()
 
         level_names = ["simple", "medium", "complex"]
         routing_level = level_names[level_idx]

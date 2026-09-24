@@ -305,6 +305,8 @@ if [ "${START_PHASE_NUM}" -le 4 ]; then
         --weights "${EVAL_CKPT}" \
         --data-root "${COCO_DATA}" \
         --device "${DEVICE}" \
+        --conf-thresh 0.01 \
+        --use-ema \
         --save-results "./results" \
         2>&1 | tee -a "${PIPELINE_LOG}"
 
@@ -316,6 +318,8 @@ if [ "${START_PHASE_NUM}" -le 4 ]; then
             --data-root "${COCO_DATA}" \
             --device "${DEVICE}" \
             --ablate "${ablate_model}" \
+            --conf-thresh 0.01 \
+            --use-ema \
             --save-results "./results" \
             --num-images 500 \
             2>&1 | tee -a "${PIPELINE_LOG}"

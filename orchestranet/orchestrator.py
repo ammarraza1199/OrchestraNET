@@ -113,7 +113,8 @@ class OrchestraNet(nn.Module):
 
         # === Stage 2: Routing Decision ===
         routing = self.router(fpn_features)
-        active_models = routing["active_models"]
+        # Filter active models respecting ablation / manual deactivation
+        active_models = [m for m in routing["active_models"] if getattr(self.models[m], "is_active", True)]
 
         # === Stage 3: Run Active Micro-Models ===
         model_outputs = {}
@@ -148,9 +149,10 @@ class OrchestraNet(nn.Module):
             # Apply confidence calibration if M7 was active
             if "m7" in model_outputs:
                 cal = model_outputs["m7"]["calibrated_confidence"]
-                # Modulate scores with calibrated confidence
+                # Soft calibration modulation that preserves confidence scale
                 if cal.shape[-1] == 1 and detections["scores"].dim() == 2:
-                    detections["scores"] = detections["scores"] * cal.squeeze(-1).unsqueeze(1)
+                    cal_mod = 0.5 + 0.5 * cal.squeeze(-1).unsqueeze(1)
+                    detections["scores"] = detections["scores"] * cal_mod
 
         else:
             detections = {"boxes": torch.empty(0, 4), "scores": torch.empty(0),
@@ -202,9 +204,14 @@ class OrchestraNet(nn.Module):
             depth_vals = None
 
             if "m2" in model_outputs:
-                vis = model_outputs["m2"]["visibility_scores"]
-                if vis.dim() > 0:
-                    occ_scores = vis[b].expand(combined_scores.shape[0])
+                if "occlusion_map" in model_outputs["m2"]:
+                    occ_map = model_outputs["m2"]["occlusion_map"]
+                    box_occ = self._sample_depth_at_boxes(occ_map[b], boxes)
+                    occ_scores = (1.0 - box_occ).clamp(0.0, 1.0)
+                elif "visibility_scores" in model_outputs["m2"]:
+                    vis = model_outputs["m2"]["visibility_scores"]
+                    if vis.dim() > 0:
+                        occ_scores = vis[b].expand(combined_scores.shape[0])
 
             if "m4" in model_outputs:
                 depth = model_outputs["m4"]["depth_map"]

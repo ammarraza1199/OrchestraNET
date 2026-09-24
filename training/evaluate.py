@@ -33,7 +33,13 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--img-size", type=int, default=640)
-    parser.add_argument("--conf-thresh", type=float, default=0.25)
+    parser.add_argument("--conf-thresh", type=float, default=0.01,
+                        help="Confidence threshold for evaluation (default 0.01 for COCO mAP)")
+    parser.add_argument("--use-ema", action="store_true", default=True,
+                        help="Load EMA weights if available in checkpoint (recommended)")
+    parser.add_argument("--no-ema", action="store_false", dest="use_ema")
+    parser.add_argument("--router-weights", default=None,
+                        help="Explicit path to trained router checkpoint (router_trained.pt)")
     parser.add_argument("--ablate", default=None, help="Model to disable for ablation (e.g., m2)")
     parser.add_argument("--save-results", default="./results")
     parser.add_argument("--num-images", type=int, default=None, help="Limit eval images")
@@ -41,7 +47,7 @@ def parse_args():
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, conf_thresh=0.25, ablate=None, num_images=None):
+def evaluate(model, loader, device, conf_thresh=0.01, ablate=None, num_images=None):
     """Run full evaluation."""
     model.eval()
     metrics = DetectionMetrics(num_classes=80)
@@ -49,7 +55,7 @@ def evaluate(model, loader, device, conf_thresh=0.25, ablate=None, num_images=No
     route_dist = {"simple": 0, "medium": 0, "complex": 0}
 
     # Disable ablated model
-    if ablate and ablate in model.models:
+    if ablate and hasattr(model, "models") and ablate in model.models:
         print(f"⚠️  ABLATION: {ablate} disabled")
         model.models[ablate].is_active = False
 
@@ -87,10 +93,10 @@ def evaluate(model, loader, device, conf_thresh=0.25, ablate=None, num_images=No
                                    targets["labels"][b][:targets["num_objects"][b]].numpy(),
                                    image_id=count)
                 else:
-                    mask = det["scores"] > conf_thresh
-                    pred_boxes = det["boxes"][mask].float().cpu().numpy()
-                    pred_scores = det["scores"][mask].float().cpu().numpy()
-                    pred_labels = det["labels"][mask].cpu().numpy()
+                    # det is already post-processed and thresholded by OA-NMS (score_threshold=conf_thresh)
+                    pred_boxes = det["boxes"].float().cpu().numpy()
+                    pred_scores = det["scores"].float().cpu().numpy()
+                    pred_labels = det["labels"].cpu().numpy()
                     n = targets["num_objects"][b].item()
                     gt_boxes = targets["boxes"][b][:n].float().numpy()
                     gt_labels = targets["labels"][b][:n].numpy()
@@ -160,11 +166,37 @@ def main():
 
     model = OrchestraNet(num_classes=80, pretrained_backbone=False)
     if args.weights and Path(args.weights).exists():
-        state = torch.load(args.weights, map_location=args.device)
-        model.load_state_dict(state.get("model_state_dict", state))
-        print(f"✅ Loaded: {args.weights}")
+        state = torch.load(args.weights, map_location=args.device, weights_only=False)
+        if args.use_ema and "ema_state_dict" in state:
+            model.load_state_dict(state["ema_state_dict"], strict=False)
+            print(f"✅ Loaded EMA weights: {args.weights}")
+        else:
+            model.load_state_dict(state.get("model_state_dict", state), strict=False)
+            print(f"✅ Loaded model weights: {args.weights}")
     else:
         print("⚠️  Using random weights")
+
+    # Check for trained router checkpoint
+    router_path = args.router_weights
+    if not router_path and args.weights:
+        w_dir = Path(args.weights).parent
+        candidates = [
+            w_dir / "router" / "router_trained.pt",
+            w_dir / "router_trained.pt",
+            Path("./checkpoints/router/router_trained.pt"),
+            Path("./checkpoints/router_trained.pt"),
+        ]
+        for c in candidates:
+            if c.exists():
+                router_path = str(c)
+                break
+
+    if router_path and Path(router_path).exists():
+        r_state = torch.load(router_path, map_location=args.device, weights_only=False)
+        r_dict = r_state.get("router_state_dict", r_state)
+        model.router.load_state_dict(r_dict, strict=False)
+        print(f"✅ Loaded trained router: {router_path}")
+
     model = model.to(args.device)
 
     ann_file = os.path.join(args.data_root, "annotations", "instances_val2017.json")

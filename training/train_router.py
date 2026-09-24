@@ -325,10 +325,29 @@ def main():
         logger.log_epoch(epoch, {"reward": reward_meter.avg, "dist": dist})
 
     router_save_path = os.path.join(args.save_dir, "router_trained.pt")
-    torch.save(
-        {"router_state_dict": model.router.state_dict()},
-        router_save_path,
-    )
+    router_state = {"router_state_dict": model.router.state_dict()}
+    torch.save(router_state, router_save_path)
+    logger.info(f"✅ Saved router weights: {router_save_path}")
+
+    # Also update orchestranet_best.pt if present
+    parent_dir = Path(args.save_dir).parent
+    for candidate_name in ["orchestranet_best.pt", "orchestranet_final.pt"]:
+        cand_path = parent_dir / candidate_name
+        if cand_path.exists():
+            try:
+                ckpt = torch.load(cand_path, map_location="cpu", weights_only=False)
+                # Update model_state_dict router keys
+                if "model_state_dict" in ckpt:
+                    for k, v in model.router.state_dict().items():
+                        ckpt["model_state_dict"][f"router.{k}"] = v.cpu()
+                if "ema_state_dict" in ckpt:
+                    for k, v in model.router.state_dict().items():
+                        ckpt["ema_state_dict"][f"router.{k}"] = v.cpu()
+                torch.save(ckpt, cand_path)
+                logger.info(f"✅ Updated {cand_path} with trained router weights")
+            except Exception as e:
+                logger.warning(f"Could not update {cand_path}: {e}")
+
     if args.drive_save_dir:
         sync_file_to_drive(router_save_path, args.drive_save_dir, logger=logger)
         drive_log_dir = Path(args.drive_save_dir).parent / "logs" / "router"
