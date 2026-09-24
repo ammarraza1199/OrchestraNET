@@ -113,6 +113,16 @@ class OrchestraNet(nn.Module):
 
         # === Stage 2: Routing Decision ===
         routing = self.router(fpn_features)
+        if getattr(self, "force_route", None) is not None:
+            forced_level = str(self.force_route).lower()
+            routing["routing_level"] = forced_level
+            if forced_level == "simple":
+                routing["active_models"] = ["m1"]
+            elif forced_level == "medium":
+                routing["active_models"] = ["m1", "m2", "m7"]
+            elif forced_level == "complex":
+                routing["active_models"] = ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
+
         # Filter active models respecting ablation / manual deactivation
         active_models = [m for m in routing["active_models"] if getattr(self.models[m], "is_active", True)]
 

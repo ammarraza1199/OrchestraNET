@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument("--router-weights", default=None,
                         help="Explicit path to trained router checkpoint (router_trained.pt)")
     parser.add_argument("--ablate", default=None, help="Model to disable for ablation (e.g., m2)")
+    parser.add_argument("--force-route", default=None, choices=["simple", "medium", "complex"],
+                        help="Force all images through a specific routing level (e.g., 'simple' for >83 FPS benchmark)")
     parser.add_argument("--save-results", default="./results")
     parser.add_argument("--num-images", type=int, default=None, help="Limit eval images")
     return parser.parse_args()
@@ -170,8 +172,15 @@ def main():
         
         # 1. Load full base model weights
         if isinstance(state, dict) and "model_state_dict" in state:
+            epoch = state.get("epoch", "N/A")
+            avg_loss = state.get("avg_loss", "N/A")
+            loss_str = f"{avg_loss:.4f}" if isinstance(avg_loss, (int, float)) else str(avg_loss)
             model.load_state_dict(state["model_state_dict"], strict=False)
-            print(f"✅ Loaded base model weights from: {args.weights}")
+            print(f"✅ Loaded base model weights from: {args.weights} (Epoch: {epoch} | Train Loss: {loss_str})")
+            if epoch == 0 and "best" in str(args.weights).lower():
+                print("⚠️  [AUDIT ALERT] 'orchestranet_best.pt' is from Epoch 0!")
+                print("⚠️  Joint validation loss exploded in later epochs, freezing 'orchestranet_best.pt' at Epoch 0.")
+                print("⚠️  To evaluate the fully trained 35-epoch joint model, pass: --weights ./checkpoints/orchestranet_epoch34.pt")
         elif isinstance(state, dict) and any(k.startswith("backbone.") or k.startswith("models.") for k in state):
             model.load_state_dict(state, strict=False)
             print(f"✅ Loaded raw weights from: {args.weights}")
@@ -193,6 +202,11 @@ def main():
                     print(f"✅ Applied EMA shadow smoothing to {applied} parameters")
     else:
         print("⚠️  Using random weights")
+
+    # Check for forced routing
+    if args.force_route:
+        model.force_route = args.force_route
+        print(f"⚡ FORCED ROUTING ACTIVE: All images forced to route='{args.force_route}'")
 
     # Check for trained router checkpoint
     router_path = args.router_weights
