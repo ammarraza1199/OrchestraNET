@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from orchestranet.orchestrator import OrchestraNet
 from orchestranet.data.datasets import COCODetectionDataset
+from orchestranet.data.transforms import get_train_transforms
 
 
 # ============ Distillation Losses ============
@@ -331,6 +332,7 @@ def main():
     dataset = COCODetectionDataset(
         root=train_root,
         ann_file=ann_file,
+        transforms=get_train_transforms(img_size=640),
     )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,

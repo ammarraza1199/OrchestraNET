@@ -22,6 +22,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from orchestranet.orchestrator import OrchestraNet
 from orchestranet.data.datasets import COCODetectionDataset
+from orchestranet.data.transforms import get_val_transforms
 from orchestranet.utils.metrics import DetectionMetrics
 
 
@@ -176,7 +177,11 @@ def main():
                 val_root = os.path.join(args.data_root, sub, "val2017")
                 break
 
-    dataset = COCODetectionDataset(root=val_root, ann_file=ann_file)
+    dataset = COCODetectionDataset(
+        root=val_root,
+        ann_file=ann_file,
+        transforms=get_val_transforms(img_size=args.img_size),
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     results = evaluate(model, loader, args.device, args.conf_thresh,

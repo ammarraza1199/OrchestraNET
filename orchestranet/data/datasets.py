@@ -91,6 +91,10 @@ class COCODetectionDataset(Dataset):
 
         if self.transforms is not None:
             img = self.transforms(img)
+        else:
+            from torchvision.transforms.functional import to_tensor, normalize
+            img = to_tensor(img)
+            img = normalize(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             
         # Pad boxes to maximum possible objects for batching
         max_objs = self.max_objs
