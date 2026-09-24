@@ -89,7 +89,13 @@ def main():
             synced_target = cand
             break
 
+    TARGET_FOLDER_ID = "1ahFAq9prc0Kha2f_hBBNLuKd3dY-sU79"
+    GDRIVE_LINK = "https://drive.google.com/drive/folders/1ahFAq9prc0Kha2f_hBBNLuKd3dY-sU79"
+
     print("\n" + "=" * 65)
+    print(f"🎯 Target Google Drive Folder: {GDRIVE_LINK}")
+    print("=" * 65)
+
     if synced_target:
         print(f"🔗 Google Drive detected at: {synced_target}")
         dest_folder = synced_target / "OrchestraNet_Backup"
@@ -104,11 +110,15 @@ def main():
         print(f"\n🎉 SUCCESS: All checkpoints, tables, and logs synced to Google Drive!")
         print(f"   Destination: {dest_folder}")
     else:
-        print("⚠️  Google Drive is not mounted yet.")
-        print(f"   All files have been safely staged and archived locally at:")
-        print(f"   1. Uncompressed folder: {staging_dir}")
-        print(f"   2. Master Archive:     {archive_path} ({archive_size_mb:.2f} MB)")
-        print("\n💡 To mount Google Drive, follow the step-by-step guide below.")
+        print("💡 Direct Sync & Upload Options to your Google Drive folder:")
+        print(f"\n  [Option 1: Instant One-Click Transfer Link]")
+        print(f"  Run this in your terminal to get a direct download link for your browser:")
+        print(f"  curl --upload-file {archive_path} https://transfer.sh/{archive_path.name}")
+        print(f"  (Then download and drag-and-drop into: {GDRIVE_LINK})")
+
+        print(f"\n  [Option 2: Direct Rclone Upload to Target Folder ID]")
+        print(f"  rclone copy {staging_dir}/ gdrive: --drive-root-folder-id {TARGET_FOLDER_ID} -P")
+        print(f"  rclone copy {archive_path} gdrive: --drive-root-folder-id {TARGET_FOLDER_ID} -P")
     print("=" * 65 + "\n")
 
 
