@@ -378,13 +378,13 @@ def generate_all_tables(complexity, speed_res, simple_res, complex_res, out_dir:
         f"| **$AP_{50}$** | Standard PASCAL VOC Metric (IoU=0.50) | {simple_res['mAP@50']:.4f} | **{complex_res['mAP@50']:.4f}** | **+{(complex_res['mAP@50']-simple_res['mAP@50'])*100:+.2f}%** |\n"
         f"| **$AP_{75}$** | Strict Localization Accuracy (IoU=0.75) | {simple_res['mAP@75']:.4f} | **{complex_res['mAP@75']:.4f}** | **+{(complex_res['mAP@75']-simple_res['mAP@75'])*100:+.2f}%** |\n"
         f"| **$AP_S$** | Small Objects (Area $< 32^2$) | {simple_res['AP_small']:.4f} | **{complex_res['AP_small']:.4f}** | **+{(complex_res['AP_small']-simple_res['AP_small'])*100:+.2f}%** |\n"
-        f"| **$AP_M$** | Medium Objects ($32^2 < \\text{Area} < 96^2$) | {simple_res['AP_medium']:.4f} | {complex_res['AP_medium']:.4f} | {(complex_res['AP_medium']-simple_res['AP_medium'])*100:+.2f}% |\n"
+        f"| **$AP_M$** | Medium Objects ($32^2 < \\text{{Area}} < 96^2$) | {simple_res['AP_medium']:.4f} | {complex_res['AP_medium']:.4f} | {(complex_res['AP_medium']-simple_res['AP_medium'])*100:+.2f}% |\n"
         f"| **$AP_L$** | Large Objects (Area $> 96^2$) | {simple_res['AP_large']:.4f} | **{complex_res['AP_large']:.4f}** | **+{(complex_res['AP_large']-simple_res['AP_large'])*100:+.2f}%** |\n"
         f"| **$AR_1$** | Average Recall with 1 detection/image | {simple_res['AR@1']:.4f} | **{complex_res['AR@1']:.4f}** | **+{(complex_res['AR@1']-simple_res['AR@1'])*100:+.2f}%** |\n"
-        f"| **$AR_{10}$** | Average Recall with 10 detections/image | {simple_res['AR@10']:.4f} | **{complex_res['AR@10']:.4f}** | **+{(complex_res['AR@10']-simple_res['AR@10'])*100:+.2f}%** |\n"
-        f"| **$AR_{100}$** | Average Recall with 100 detections/image | {simple_res['AR@100']:.4f} | **{complex_res['AR@100']:.4f}** | **+{(complex_res['AR@100']-simple_res['AR@100'])*100:+.2f}%** |\n"
+        f"| **$AR_{{10}}$** | Average Recall with 10 detections/image | {simple_res['AR@10']:.4f} | **{complex_res['AR@10']:.4f}** | **+{(complex_res['AR@10']-simple_res['AR@10'])*100:+.2f}%** |\n"
+        f"| **$AR_{{100}}$** | Average Recall with 100 detections/image | {simple_res['AR@100']:.4f} | **{complex_res['AR@100']:.4f}** | **+{(complex_res['AR@100']-simple_res['AR@100'])*100:+.2f}%** |\n"
         f"| **$AR_S$** | Small Object Recall (Area $< 32^2$) | {simple_res['AR_small']:.4f} | **{complex_res['AR_small']:.4f}** | **+{(complex_res['AR_small']-simple_res['AR_small'])*100:+.2f}%** |\n"
-        f"| **$AR_M$** | Medium Object Recall ($32^2 < \\text{Area} < 96^2$) | {simple_res['AR_medium']:.4f} | {complex_res['AR_medium']:.4f} | {(complex_res['AR_medium']-simple_res['AR_medium'])*100:+.2f}% |\n"
+        f"| **$AR_M$** | Medium Object Recall ($32^2 < \\text{{Area}} < 96^2$) | {simple_res['AR_medium']:.4f} | {complex_res['AR_medium']:.4f} | {(complex_res['AR_medium']-simple_res['AR_medium'])*100:+.2f}% |\n"
         f"| **$AR_L$** | Large Object Recall (Area $> 96^2$) | {simple_res['AR_large']:.4f} | **{complex_res['AR_large']:.4f}** | **+{(complex_res['AR_large']-simple_res['AR_large'])*100:+.2f}%** |\n"
     )
     t3_tex = (
@@ -528,6 +528,43 @@ def main():
             "full_orchestranet": complex_eval,
         }, f, indent=2, default=str)
     print(f"📦 Full evaluation bundle saved to: {summary_path}\n")
+
+    # 8. Create Timestamped Archive & Sync to Google Drive
+    import shutil, tarfile, datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_name = f"orchestranet_paper_tables_{timestamp}.tar.gz"
+    parent_dir = os.path.dirname(os.path.abspath(args.out_dir))
+    archive_path = os.path.join(parent_dir, archive_name)
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        tar.add(args.out_dir, arcname="paper_tables")
+        if os.path.exists("./results"):
+            tar.add("./results", arcname="results")
+    print(f"📦 Archive created at: {archive_path}")
+
+    # Check common Google Drive mount locations
+    drive_candidates = [
+        "/root/drive",
+        "/content/drive/MyDrive",
+        "/content/drive",
+        os.path.expanduser("~/drive"),
+    ]
+    synced = False
+    for drive_dir in drive_candidates:
+        if os.path.isdir(drive_dir):
+            try:
+                dest_archive = os.path.join(drive_dir, archive_name)
+                shutil.copy2(archive_path, dest_archive)
+                dest_tables = os.path.join(drive_dir, "paper_tables")
+                shutil.copytree(args.out_dir, dest_tables, dirs_exist_ok=True)
+                print(f"✅ Synced all paper tables to Google Drive: {dest_tables}")
+                print(f"✅ Synced archive to Google Drive: {dest_archive}")
+                synced = True
+                break
+            except Exception as e:
+                print(f"⚠️  Drive sync notice: {e}")
+    if not synced:
+        print(f"💡 Note: Google Drive not mounted at /root/drive. Archive is stored locally at: {archive_path}\n")
 
 
 if __name__ == "__main__":
