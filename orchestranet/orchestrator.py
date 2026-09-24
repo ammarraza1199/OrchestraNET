@@ -107,6 +107,29 @@ class OrchestraNet(nn.Module):
               - "model_outputs": Raw outputs from each active model
               - "losses": Training losses (if targets provided)
         """
+        # Fast-Path for forced simple route with self-contained M1 detector (bypasses heavy ResNet-50 + FPN)
+        if (getattr(self, "force_route", None) is not None and 
+            str(self.force_route).lower() == "simple" and 
+            getattr(self.models["m1"], "pretrained_detector", None) is not None):
+            m1_out = self.models["m1"](features=None, context={}, images=images)
+            obj = m1_out["objectness"]
+            if obj.dim() == 3:
+                obj = obj.squeeze(-1)
+            scores_val = obj if (obj.numel() > 0 and obj.min() >= 0.0 and obj.max() <= 1.0) else torch.sigmoid(obj)
+            detections = {
+                "boxes": m1_out["decoded_boxes"],
+                "scores": scores_val,
+                "class_logits": m1_out["class_logits"],
+            }
+            final_detections = self._apply_oa_nms(detections, {"m1": m1_out}, score_threshold=conf_thresh)
+            return {
+                "detections": final_detections,
+                "routing": {"routing_level": "simple", "active_models": ["m1"]},
+                "model_outputs": {"m1": m1_out},
+                "losses": {},
+                "fpn_features": [],
+            }
+
         # === Stage 1: Feature Extraction ===
         backbone_features = self.backbone(images)
         fpn_features = self.fpn(backbone_features)
@@ -169,8 +192,8 @@ class OrchestraNet(nn.Module):
                 cal = model_outputs["m7"]["calibrated_confidence"]
                 # Soft calibration modulation that preserves confidence scale
                 if cal.shape[-1] == 1 and detections["scores"].dim() == 2:
-                    cal_mod = 0.5 + 0.5 * cal.squeeze(-1).unsqueeze(1)
-                    detections["scores"] = detections["scores"] * cal_mod
+                    cal_mod = 1.0 + 0.05 * (cal.squeeze(-1).unsqueeze(1) - 0.5)
+                    detections["scores"] = (detections["scores"] * cal_mod).clamp(0.0, 1.0)
 
         else:
             detections = {"boxes": torch.empty(0, 4), "scores": torch.empty(0),
@@ -243,6 +266,7 @@ class OrchestraNet(nn.Module):
                 labels=labels,
                 occlusion_scores=occ_scores,
                 depth_values=depth_vals,
+                iou_threshold=0.65,
                 score_threshold=score_threshold,
             )
             results.append(result)

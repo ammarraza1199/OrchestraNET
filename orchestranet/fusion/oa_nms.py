@@ -18,9 +18,9 @@ def occlusion_aware_nms(
     labels: torch.Tensor,
     occlusion_scores: torch.Tensor | None = None,
     depth_values: torch.Tensor | None = None,
-    iou_threshold: float = 0.5,
-    occlusion_threshold: float = 0.3,
-    score_threshold: float = 0.05,
+    iou_threshold: float = 0.65,
+    occlusion_threshold: float = 0.20,
+    score_threshold: float = 0.01,
     max_detections: int = 300,
 ) -> dict[str, torch.Tensor]:
     """
@@ -142,10 +142,11 @@ def occlusion_aware_nms(
         if len(dup_cands) > 0:
             suppressed[dup_cands] = True
 
-        # Occlusion pair candidates: keep and adjust score
+        # Occlusion pair candidates: keep both detections!
+        # (This is the primary novelty of OA-NMS: preserving real occluded instances that standard NMS suppresses)
         occ_cands = overlap_cands[is_occ_pair]
         if len(occ_cands) > 0 and occlusion_scores is not None:
-            scores[occ_cands] = scores[occ_cands] * torch.clamp(occlusion_scores[occ_cands], min=0.3)
+            scores[occ_cands] = scores[occ_cands] * torch.clamp(0.90 + 0.10 * occlusion_scores[occ_cands], min=0.90, max=1.0)
 
     keep = torch.tensor(keep, dtype=torch.long, device=boxes.device)
 
