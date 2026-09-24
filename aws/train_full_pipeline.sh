@@ -274,7 +274,7 @@ if [ "${START_PHASE_NUM}" -le 3 ]; then
     python training/train_router.py \
         --weights "${JOINT_CKPT}" \
         --data-root "${COCO_DATA}" \
-        --epochs 20 \
+        --epochs 3 \
         --batch-size 8 \
         --device "${DEVICE}" \
         --save-dir "${SAVE_DIR}/router" \
