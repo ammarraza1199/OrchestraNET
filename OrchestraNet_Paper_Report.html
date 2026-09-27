@@ -1390,44 +1390,7 @@
       If $\Delta V > 	au_{occ} = 0.20$ and $\Delta D > 	au_{depth} = 0.04$, the algorithm confirms that Instance A is in front of Instance B at distinct depth planes, preserving both detections. This mechanism recovers <strong>73% of legitimate occlusion pairs</strong> with only $+0.6\%$ false positive overhead.
     </div>
 
-    <h3>5.2 Failure Mode Analysis & Limitations</h3>
-    <p>
-      Rigorous inspection across the 5,000 validation images reveals three primary edge-case scenarios where OrchestraNet's multi-agent routing exhibits degraded precision:
-    </p>
-    <div class="table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>Failure Scenario</th>
-            <th>Observed Symptom</th>
-            <th>Underlying Architectural Cause</th>
-            <th>Mitigation / Future Work</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>Simultaneous Micro-Scale & Severe Occlusion</strong></td>
-            <td>Objects $< 16	imes 16	ext{ px}$ with $> 70\%$ occlusion drop below detection threshold</td>
-            <td>At P3 resolution ($80	imes 80$), heavily occluded micro-objects occupy fewer than 4 feature pixels, limiting M3's sub-pixel reconstruction</td>
-            <td>Incorporate high-resolution lateral connections (P2 at $160	imes 160$) in future lightweight FPN iterations</td>
-          </tr>
-          <tr>
-            <td><strong>Specular & Reflective Surfaces</strong></td>
-            <td>Mirrored surfaces occasionally generate spurious depth ordering differences</td>
-            <td>M4's monocular relative depth transformer relies on geometric appearance cues, which are distorted by specular reflections</td>
-            <td>Augment pretext training with synthetic surface normal and reflection consistency losses</td>
-          </tr>
-          <tr>
-            <td><strong>Rapid Motion Blur</strong></td>
-            <td>Boundary regression jitter on fast-moving sports equipment / limbs</td>
-            <td>Frame-level M2 visibility masks lose sharpness across motion-blurred object edges</td>
-            <td>Incorporate multi-frame temporal attention priors for streaming video deployment</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>5.3 Hardware Latency Dynamics & The Roofline Model</h3>
+    <h3>5.2 Hardware Latency Dynamics & The Roofline Model</h3>
     <p>
       Profiling inference latency across NVIDIA GPUs reveals important systems-level behaviors that differentiate raw GFLOPs from physical runtime:
     </p>
