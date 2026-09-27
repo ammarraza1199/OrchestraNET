@@ -64,11 +64,12 @@ def parse_args():
 
 
 @torch.no_grad()
-def benchmark_fps(model, device: str, num_runs: int = 60) -> float:
-    """Measure inference throughput (FPS) for the active configuration."""
+def benchmark_fps(model, device: str, num_runs: int = 100) -> tuple[float, float, float]:
+    """Measure inference throughput (FPS) and latency (mean, std) for the active configuration."""
     model.eval()
     dummy = torch.randn(1, 3, 640, 640, device=device)
-    for _ in range(15):
+    # Warmup GPU
+    for _ in range(25):
         _ = model(dummy)
     if device == "cuda":
         torch.cuda.synchronize()
@@ -85,7 +86,9 @@ def benchmark_fps(model, device: str, num_runs: int = 60) -> float:
         latencies.append((t1 - t0) * 1000.0)
 
     mean_ms = float(np.mean(latencies))
-    return float(1000.0 / mean_ms) if mean_ms > 0 else 0.0
+    std_ms = float(np.std(latencies))
+    fps = float(1000.0 / mean_ms) if mean_ms > 0 else 0.0
+    return fps, mean_ms, std_ms
 
 
 @torch.no_grad()
@@ -197,22 +200,23 @@ def main():
     ablation_configs = [
         {"name": "Full OrchestraNet", "disable": None, "force_route": "complex"},
         {"name": "−M2 (Occlusion Analyzer)", "disable": "m2", "force_route": "complex"},
+        {"name": "−M3 (Small Enhancer)", "disable": "m3", "force_route": "complex"},
+        {"name": "−M4 (Depth Estimator)", "disable": "m4", "force_route": "complex"},
+        {"name": "−M5 (Scene Context)", "disable": "m5", "force_route": "complex"},
         {"name": "−M6 (Amodal Completer)", "disable": "m6", "force_route": "complex"},
         {"name": "−M7 (Calibrator)", "disable": "m7", "force_route": "complex"},
-        {"name": "−M4 (Depth Estimator)", "disable": "m4", "force_route": "complex"},
-        {"name": "−M3 (Small Enhancer)", "disable": "m3", "force_route": "complex"},
-        {"name": "−M5 (Scene Context)", "disable": "m5", "force_route": "complex"},
-        {"name": "M1 only (Baseline)", "disable": None, "force_route": "simple"},
+        {"name": "Simple Route (M1+M5)", "disable": None, "force_route": "simple"},
+        {"name": "M1 only (Baseline)", "disable": None, "force_route": "monolithic"},
     ]
 
     results = []
     baseline_map = None
 
-    print("\n🚀 Executing 8-pass ablation suite across COCO validation images...\n")
+    print(f"\n🚀 Executing {len(ablation_configs)}-pass ablation suite across COCO validation images...\n")
 
     for idx, cfg in enumerate(ablation_configs):
         c_name = cfg["name"]
-        print(f"[{idx+1}/8] Benchmarking: {c_name}...")
+        print(f"[{idx+1}/{len(ablation_configs)}] Benchmarking: {c_name}...")
 
         # Reset all models to active state
         for m_key in model.models:
@@ -224,8 +228,8 @@ def main():
 
         model.force_route = cfg["force_route"]
 
-        # Measure FPS
-        fps = benchmark_fps(model, args.device, num_runs=50)
+        # Measure FPS and Latency
+        fps, mean_ms, std_ms = benchmark_fps(model, args.device, num_runs=50)
 
         # Evaluate detection metrics
         eval_metrics = evaluate_config(model, loader, args.device, args.conf_thresh, args.num_images)
@@ -240,13 +244,15 @@ def main():
         else:
             delta_map = map5095 - baseline_map
 
-        print(f"    --> mAP@50:95: {map5095:.2f}% | mAP@50: {map50:.2f}% | AP_occ: {ap_occ:.2f}% | FPS: {fps:.1f} | Δ: {delta_map:+.2f}%")
+        print(f"    --> mAP@50:95: {map5095:.2f}% | mAP@50: {map50:.2f}% | AP_occ: {ap_occ:.2f}% | Latency: {mean_ms:.2f}±{std_ms:.2f} ms ({fps:.1f} FPS) | Δ: {delta_map:+.2f}%")
 
         results.append({
             "configuration": c_name,
             "mAP@50:95": map5095,
             "mAP@50": map50,
             "AP_occ": ap_occ,
+            "latency_ms": mean_ms,
+            "latency_std": std_ms,
             "FPS": fps,
             "delta_mAP": delta_map,
         })

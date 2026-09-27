@@ -1,0 +1,288 @@
+(main) root@C.51954352:~/OrchestraNET$ python scripts/run_ablation_study.py     --weights ./checkpoints/orchestranet_epoch34.pt     --pretrained-m1 yolov8m     --data-root ./data/coco     --num-images 5000     --conf-thresh 0.001     --out-dir ./paper_tables
+============================================================================
+🔬 OrchestraNet — Real Leave-One-Out Component Ablation Suite (Table 5)
+============================================================================
+Device: cuda | Weights: ./checkpoints/orchestranet_epoch34.pt | M1: yolov8m | Images: 5000
+✅ Loaded base model weights: ./checkpoints/orchestranet_epoch34.pt
+✅ Loaded router weights: checkpoints/router/router_trained.pt
+✅ M1 Primary Detector: Loaded pre-trained Ultralytics yolov8m.pt
+loading annotations into memory...
+Done (t=0.37s)
+creating index...
+index created!
+
+🚀 Executing 8-pass ablation suite across COCO validation images...
+
+[1/8] Benchmarking: Full OrchestraNet...
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================
+
+    --> mAP@50:95: 48.83% | mAP@50: 65.00% | AP_occ: 56.68% | FPS: 31.6 | Δ: +0.00%                                                                                
+[8/8] Benchmarking: M1 only (Baseline)...
+    --> mAP@50:95: 48.48% | mAP@50: 65.16% | AP_occ: 56.87% | FPS: 125.2 | Δ: -0.35%                                                                               
+
+================================================================================
+📊 TABLE 5: COMPONENT ABLATION STUDY RESULTS (MEASURED EMPIRICAL)
+================================================================================
+Configuration                  | mAP@50:95  | mAP@50   | AP_occ   | FPS    | Δ mAP   
+--------------------------------------------------------------------------------
+Full OrchestraNet              | 48.83      | 65.00    | 56.68    | 32.4   | —       
+−M2 (Occlusion Analyzer)       | 48.83      | 65.00    | 56.68    | 35.7   | +0.00   
+−M6 (Amodal Completer)         | 48.83      | 65.00    | 56.68    | 34.4   | +0.00   
+−M7 (Calibrator)               | 48.82      | 65.00    | 56.67    | 30.2   | -0.00   
+−M4 (Depth Estimator)          | 48.83      | 65.00    | 56.68    | 30.3   | +0.00   
+−M3 (Small Enhancer)           | 48.85      | 65.00    | 56.70    | 30.5   | +0.02   
+−M5 (Scene Context)            | 48.83      | 65.00    | 56.68    | 31.6   | +0.00   
+M1 only (Baseline)             | 48.48      | 65.16    | 56.87    | 125.2  | -0.35   
+================================================================================
+
+✅ Table 5 files saved successfully to:
+  - ./paper_tables/table5_ablation_study.md
+  - ./paper_tables/table5_ablation_study.tex
+  - ./paper_tables/table5_ablation_summary.json
+
+================================================================================
+⚖️ VERIFICATION: NEW ABLATION MEASUREMENTS vs CURRENT MANUSCRIPT TABLE 5
+================================================================================
+Configuration              | New mAP@50  | Old mAP@50  | Exceeds Old? | New mAP@50:95 | Old mAP@50:95
+--------------------------------------------------------------------------------
+Full OrchestraNet          | 65.00       | 64.30       | ✅ YES        | 48.83         | 42.70
+−M2 (Occlusion Analyzer)   | 65.00       | 61.80       | ✅ YES        | 48.83         | 40.20
+−M6 (Amodal Completer)     | 65.00       | 62.40       | ✅ YES        | 48.83         | 40.80
+−M7 (Calibrator)           | 65.00       | 63.10       | ✅ YES        | 48.82         | 41.40
+−M4 (Depth Estimator)      | 65.00       | 62.90       | ✅ YES        | 48.83         | 41.50
+−M3 (Small Enhancer)       | 65.00       | 63.50       | ✅ YES        | 48.85         | 41.90
+−M5 (Scene Context)        | 65.00       | 63.80       | ✅ YES        | 48.83         | 42.30
+M1 only (Baseline)         | 65.16       | 58.20       | ✅ YES        | 48.48         | 37.40
+================================================================================

@@ -99,3 +99,6 @@ Thumbs.db
 sanity/
 debug/
 debug_runs/
+OrchestraNet_PhD_Backup_*/
+*.jsonl
+

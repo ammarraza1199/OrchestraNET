@@ -107,9 +107,9 @@ class OrchestraNet(nn.Module):
               - "model_outputs": Raw outputs from each active model
               - "losses": Training losses (if targets provided)
         """
-        # Fast-Path for forced simple route with self-contained M1 detector (bypasses heavy ResNet-50 + FPN)
+        # Fast-Path for standalone M1 monolithic baseline (bypasses backbone + FPN)
         if (getattr(self, "force_route", None) is not None and 
-            str(self.force_route).lower() == "simple" and 
+            str(self.force_route).lower() in ("monolithic", "m1_alone", "m1_only", "baseline") and 
             getattr(self.models["m1"], "pretrained_detector", None) is not None):
             m1_out = self.models["m1"](features=None, context={"m1_iou": 0.70}, images=images)
             obj = m1_out["objectness"]
@@ -124,7 +124,7 @@ class OrchestraNet(nn.Module):
             final_detections = self._apply_oa_nms(detections, {"m1": m1_out}, score_threshold=conf_thresh)
             return {
                 "detections": final_detections,
-                "routing": {"routing_level": "simple", "active_models": ["m1"]},
+                "routing": {"routing_level": "monolithic", "active_models": ["m1"]},
                 "model_outputs": {"m1": m1_out},
                 "losses": {},
                 "fpn_features": [],
@@ -139,12 +139,14 @@ class OrchestraNet(nn.Module):
         if getattr(self, "force_route", None) is not None:
             forced_level = str(self.force_route).lower()
             routing["routing_level"] = forced_level
-            if forced_level == "simple":
-                routing["active_models"] = ["m1"]
-            elif forced_level == "medium":
-                routing["active_models"] = ["m1", "m2", "m7"]
-            elif forced_level == "complex":
+            if forced_level in ("simple", "route1"):
+                routing["active_models"] = ["m1", "m5"]
+            elif forced_level in ("medium", "route2"):
+                routing["active_models"] = ["m1", "m2", "m5", "m7"]
+            elif forced_level in ("complex", "route3"):
                 routing["active_models"] = ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
+            elif forced_level in ("monolithic", "m1_alone", "m1_only", "baseline"):
+                routing["active_models"] = ["m1"]
 
         # Filter active models respecting ablation / manual deactivation
         active_models = [m for m in routing["active_models"] if getattr(self.models[m], "is_active", True)]

@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Component Ablation Study on COCO val2017 (5,000 images).}
+\label{tab:ablation_study}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Configuration} & \textbf{mAP@50:95} & \textbf{mAP@50} & \textbf{AP$_{occ}$} & \textbf{FPS} & \textbf{$\Delta$ mAP} \\
+\midrule
+Full OrchestraNet & 48.83 & 65.00 & 56.68 & 32.4 & — \\
+−M2 (Occlusion Analyzer) & 48.83 & 65.00 & 56.68 & 35.7 & +0.00 \\
+−M6 (Amodal Completer) & 48.83 & 65.00 & 56.68 & 34.4 & +0.00 \\
+−M7 (Calibrator) & 48.82 & 65.00 & 56.67 & 30.2 & -0.00 \\
+−M4 (Depth Estimator) & 48.83 & 65.00 & 56.68 & 30.3 & +0.00 \\
+−M3 (Small Enhancer) & 48.85 & 65.00 & 56.70 & 30.5 & +0.02 \\
+−M5 (Scene Context) & 48.83 & 65.00 & 56.68 & 31.6 & +0.00 \\
+M1 only (Baseline) & 48.48 & 65.16 & 56.87 & 125.2 & -0.35 \\
+\bottomrule
+\end{tabular}
+\end{table}

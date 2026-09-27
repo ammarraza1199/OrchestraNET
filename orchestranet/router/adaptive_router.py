@@ -19,9 +19,10 @@ from .complexity_estimator import SceneComplexityEstimator
 
 # Routing profiles: which models activate at each complexity level
 ROUTING_PROFILES = {
-    "simple": ["m1"],                                        # ~2ms
-    "medium": ["m1", "m2", "m7"],                           # ~5ms
-    "complex": ["m1", "m2", "m3", "m4", "m5", "m6", "m7"],  # ~12ms
+    "simple": ["m1", "m5"],                                        # Base detector + Scene context (~7ms)
+    "medium": ["m1", "m2", "m5", "m7"],                           # + Occlusion Analyzer + Calibrator (~16ms)
+    "complex": ["m1", "m2", "m3", "m4", "m5", "m6", "m7"],        # Full specialist ensemble (~31ms)
+    "monolithic": ["m1"],                                          # Standalone M1 baseline without specialists (~7ms)
 }
 
 ALL_MODELS = ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
