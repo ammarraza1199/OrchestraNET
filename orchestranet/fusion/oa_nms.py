@@ -127,21 +127,22 @@ def occlusion_aware_nms(
 
         overlap_cands = cand_indices[overlap_mask]
 
-        # Vectorized occlusion-pair detection using M2 (occlusion), M4 (depth), and scale equivariance
+        # Vectorized occlusion-pair detection using M2 (occlusion) and M4 (depth)
         is_occ_pair = torch.zeros(len(overlap_cands), dtype=torch.bool, device=boxes.device)
         if occlusion_scores is not None:
             vis_diff = torch.abs(occlusion_scores[i] - occlusion_scores[overlap_cands])
-            is_occ_pair = is_occ_pair | (vis_diff > 0.05)
+            is_occ_pair = is_occ_pair | (vis_diff > 0.04)
 
         if depth_values is not None:
             depth_diff = torch.abs(depth_values[i] - depth_values[overlap_cands])
             is_occ_pair = is_occ_pair | (depth_diff > 0.04)
 
-        # Scale difference detection: small object overlapping large object (e.g. person holding cup/bag)
-        area_i = (boxes[i, 2] - boxes[i, 0]).clamp(min=1) * (boxes[i, 3] - boxes[i, 1]).clamp(min=1)
-        area_cands = (boxes[overlap_cands, 2] - boxes[overlap_cands, 0]).clamp(min=1) * (boxes[overlap_cands, 3] - boxes[overlap_cands, 1]).clamp(min=1)
-        scale_ratio = torch.max(area_i / area_cands, area_cands / area_i)
-        is_occ_pair = is_occ_pair | (scale_ratio > 1.8)
+        # Scale difference detection: small object overlapping large object when occlusion/depth active
+        if occlusion_scores is not None or depth_values is not None:
+            area_i = (boxes[i, 2] - boxes[i, 0]).clamp(min=1) * (boxes[i, 3] - boxes[i, 1]).clamp(min=1)
+            area_cands = (boxes[overlap_cands, 2] - boxes[overlap_cands, 0]).clamp(min=1) * (boxes[overlap_cands, 3] - boxes[overlap_cands, 1]).clamp(min=1)
+            scale_ratio = torch.max(area_i / area_cands, area_cands / area_i)
+            is_occ_pair = is_occ_pair | (scale_ratio > 2.0)
 
         # Occlusion pair candidates: preserved with full confidence!
         # Duplicate candidates: apply Gaussian Soft-NMS decay

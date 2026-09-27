@@ -172,7 +172,7 @@ class OrchestraNet(nn.Module):
                 fpn_features, context=context
             )
 
-        # === Stage 4: Fusion ===
+        # === Stage 4: Fusion & Prediction Refinement ===
         if "m1" in model_outputs:
             m1_out = model_outputs["m1"]
             obj = m1_out["objectness"]
@@ -183,27 +183,63 @@ class OrchestraNet(nn.Module):
             else:
                 scores_val = torch.sigmoid(obj)
 
-            detections = {
-                "boxes": m1_out["decoded_boxes"],
-                "scores": scores_val,
-                "class_logits": m1_out["class_logits"],
-            }
+            boxes = m1_out["decoded_boxes"].clone()
+            scores = scores_val.clone()
+            class_logits = m1_out["class_logits"].clone()
+            B = boxes.shape[0]
 
-            # Apply confidence calibration if M7 was active
+            # 1. M5 (Scene Context) Refinement:
+            # Re-scores class logits based on scene semantic object priors
+            if "m5" in model_outputs:
+                priors = model_outputs["m5"].get("object_priors")
+                if priors is not None and priors.shape[-1] == class_logits.shape[-1]:
+                    prior_mod = 0.20 * torch.log(priors.clamp(min=1e-4)).unsqueeze(1)
+                    class_logits = class_logits + prior_mod
+
+            # 2. M6 (Amodal Completer) Refinement:
+            # Expands clipped visible boxes of occluded objects to their full amodal extent
+            if "m6" in model_outputs and boxes.shape[1] > 0:
+                amodal_offsets = model_outputs["m6"].get("amodal_bbox_offset")
+                amodal_conf = model_outputs["m6"].get("completion_confidence")
+                if amodal_offsets is not None and amodal_conf is not None:
+                    M = min(boxes.shape[1], amodal_offsets.shape[1])
+                    if M > 0:
+                        w = (boxes[:, :M, 2] - boxes[:, :M, 0]).clamp(min=1)
+                        h = (boxes[:, :M, 3] - boxes[:, :M, 1]).clamp(min=1)
+                        offsets = torch.tanh(amodal_offsets[:, :M]) * amodal_conf[:, :M] * 0.08
+                        boxes[:, :M, 0] = boxes[:, :M, 0] - offsets[:, :, 0] * w
+                        boxes[:, :M, 1] = boxes[:, :M, 1] - offsets[:, :, 1] * h
+                        boxes[:, :M, 2] = boxes[:, :M, 2] + offsets[:, :, 2] * w
+                        boxes[:, :M, 3] = boxes[:, :M, 3] + offsets[:, :, 3] * h
+
+            # 3. M3 (Small Object Enhancer) Refinement:
+            # Selectively verifies and enhances small object detections (< 32x32)
+            if "m3" in model_outputs and boxes.shape[1] > 0:
+                conf_boost = model_outputs["m3"].get("confidence_boost")
+                box_w = (boxes[:, :, 2] - boxes[:, :, 0]).clamp(min=0)
+                box_h = (boxes[:, :, 3] - boxes[:, :, 1]).clamp(min=0)
+                small_mask = (box_w * box_h) < 1024.0
+                if conf_boost is not None and small_mask.any():
+                    for b_i in range(B):
+                        b_mask = small_mask[b_i]
+                        if b_mask.any():
+                            sampled_boost = self._sample_depth_at_boxes(conf_boost[b_i], boxes[b_i])
+                            sr_factor = (sampled_boost - 0.5) * 0.12
+                            scores[b_i, b_mask] = (scores[b_i, b_mask] * (1.0 + sr_factor[b_mask])).clamp(0.0, 1.0)
+
+            # 4. M7 (Confidence Calibrator) Refinement:
+            # Applies temperature calibration to align probabilities with true empirical precision
             if "m7" in model_outputs:
-                cal = model_outputs["m7"]["calibrated_confidence"]
-                # Soft calibration modulation that preserves confidence scale
-                if cal.shape[-1] == 1 and detections["scores"].dim() == 2:
-                    cal_mod = 1.0 + 0.05 * (cal.squeeze(-1).unsqueeze(1) - 0.5)
-                    detections["scores"] = (detections["scores"] * cal_mod).clamp(0.0, 1.0)
+                temp = getattr(self.models["m7"], "temperature", torch.tensor(1.3, device=scores.device))
+                temp_val = float(temp.mean().item()) if isinstance(temp, torch.Tensor) else float(temp)
+                temp_val = max(0.8, min(2.0, temp_val))
+                scores = torch.pow(scores.clamp(min=1e-5), 1.0 / temp_val)
 
-            # Apply M3 small object enhancement if M3 was active
-            if "m3" in model_outputs and detections["boxes"].shape[1] > 0:
-                box_w = (detections["boxes"][:, :, 2] - detections["boxes"][:, :, 0]).clamp(min=0)
-                box_h = (detections["boxes"][:, :, 3] - detections["boxes"][:, :, 1]).clamp(min=0)
-                small_mask = (box_w * box_h) < 1024.0  # COCO small object threshold (32x32)
-                if small_mask.any():
-                    detections["scores"][small_mask] = (detections["scores"][small_mask] * 1.05).clamp(0.0, 1.0)
+            detections = {
+                "boxes": boxes,
+                "scores": scores,
+                "class_logits": class_logits,
+            }
 
         else:
             detections = {"boxes": torch.empty(0, 4), "scores": torch.empty(0),
