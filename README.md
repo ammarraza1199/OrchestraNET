@@ -303,8 +303,8 @@ If you find OrchestraNet useful for your research, please cite our manuscript:
 ```bibtex
 @article{raza2026orchestranet,
   title={OrchestraNet: A Heterogeneous Multi-Model Orchestration Framework with Explicit Occlusion Reasoning and Dynamic Real-Time Compute Scaling},
-  author={Raza, Ammar and Co-authors},
-  journal={IEEE Transactions on Image Processing (Under Review)},
+  author={------},
+  journal={------},
   year={2026}
 }
 ```
