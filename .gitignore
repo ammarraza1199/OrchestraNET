@@ -87,6 +87,8 @@ Thumbs.db
 *~
 *.before_*
 *.orig
+pre_sync_backup/
+*_backup/
 
 # ---- Secrets ----
 .env

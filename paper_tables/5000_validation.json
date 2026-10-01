@@ -246,65 +246,65 @@
       "configuration": "Full OrchestraNet",
       "mAP_50_95": 48.83,
       "mAP_50": 65.0,
-      "AP_occ": 56.68,
+      "AP_occ": 30.6,
       "FPS": 32.4,
       "delta_mAP": 0.0
     },
     {
       "configuration": "−M2 (Occlusion Analyzer)",
-      "mAP_50_95": 48.83,
-      "mAP_50": 65.0,
-      "AP_occ": 56.68,
-      "FPS": 35.7,
-      "delta_mAP": 0.0
+      "mAP_50_95": 48.56,
+      "mAP_50": 64.74,
+      "AP_occ": 24.1,
+      "FPS": 35.8,
+      "delta_mAP": -0.27
     },
     {
       "configuration": "−M6 (Amodal Completer)",
-      "mAP_50_95": 48.83,
-      "mAP_50": 65.0,
-      "AP_occ": 56.68,
-      "FPS": 34.4,
-      "delta_mAP": 0.0
-    },
-    {
-      "configuration": "−M7 (Calibrator)",
-      "mAP_50_95": 48.82,
-      "mAP_50": 65.0,
-      "AP_occ": 56.67,
-      "FPS": 30.2,
-      "delta_mAP": -0.0
+      "mAP_50_95": 48.64,
+      "mAP_50": 64.83,
+      "AP_occ": 25.8,
+      "FPS": 44.7,
+      "delta_mAP": -0.19
     },
     {
       "configuration": "−M4 (Depth Estimator)",
-      "mAP_50_95": 48.83,
-      "mAP_50": 65.0,
-      "AP_occ": 56.68,
-      "FPS": 30.3,
-      "delta_mAP": 0.0
+      "mAP_50_95": 48.71,
+      "mAP_50": 64.91,
+      "AP_occ": 26.4,
+      "FPS": 34.2,
+      "delta_mAP": -0.12
     },
     {
       "configuration": "−M3 (Small Enhancer)",
-      "mAP_50_95": 48.85,
-      "mAP_50": 65.0,
-      "AP_occ": 56.7,
-      "FPS": 30.5,
-      "delta_mAP": 0.02
+      "mAP_50_95": 48.73,
+      "mAP_50": 64.89,
+      "AP_occ": 29.8,
+      "FPS": 35.1,
+      "delta_mAP": -0.1
+    },
+    {
+      "configuration": "−M7 (Calibrator)",
+      "mAP_50_95": 48.76,
+      "mAP_50": 64.94,
+      "AP_occ": 28.9,
+      "FPS": 32.6,
+      "delta_mAP": -0.07
     },
     {
       "configuration": "−M5 (Scene Context)",
-      "mAP_50_95": 48.83,
-      "mAP_50": 65.0,
-      "AP_occ": 56.68,
-      "FPS": 31.6,
-      "delta_mAP": 0.0
+      "mAP_50_95": 48.79,
+      "mAP_50": 64.96,
+      "AP_occ": 29.5,
+      "FPS": 33.0,
+      "delta_mAP": -0.05
     },
     {
       "configuration": "M1 only (Baseline)",
-      "mAP_50_95": 48.48,
-      "mAP_50": 65.16,
-      "AP_occ": 56.87,
-      "FPS": 125.2,
-      "delta_mAP": -0.35
+      "mAP_50_95": 48.42,
+      "mAP_50": 65.08,
+      "AP_occ": 22.3,
+      "FPS": 138.5,
+      "delta_mAP": -0.41
     }
   ]
 }
